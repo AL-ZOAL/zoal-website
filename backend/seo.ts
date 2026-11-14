@@ -21,8 +21,8 @@ async function getBrandingSettings(): Promise<any> {
   const connectionString = process.env.DATABASE_URL;
   const defaultSettings = {
     businessName: 'AL ZOAL Enterprise',
-    businessLogo: '/assets/branding/zoal-main-logo.jpg',
-    favicon: '/assets/branding/zoal-main-logo.jpg',
+    businessLogo: '/images/branding/zoal%20logo.4.jpeg',
+    favicon: '/images/branding/zoal%20logo.4.jpeg',
     address: 'Abu Bakr As Siddiq Rd, Almuallimeen, Al Hofuf 36361, Saudi Arabia',
     email: 'alzoal3003@gmail.com',
     phone: '+966 56 769 9315',
