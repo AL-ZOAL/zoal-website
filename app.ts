@@ -3775,8 +3775,8 @@ const mapBrandingToSafeClientSettings = (row: any) => {
 
   return {
     businessName: row.business_name || 'AL ZOAL Enterprise',
-    businessLogo: row.business_logo || '/assets/branding/zoal-main-logo.jpg',
-    favicon: row.favicon || '/assets/branding/zoal-main-logo.jpg',
+    businessLogo: row.business_logo || '/images/branding/zoal%20logo.4.jpeg',
+    favicon: row.favicon || '/images/branding/zoal%20logo.4.jpeg',
     address: row.address || 'Abu Bakr As Siddiq Rd, Almuallimeen, Al Hofuf 36361, Saudi Arabia',
     email: row.email || 'alzoal3003@gmail.com',
     phone: row.phone || '+966 56 769 9315',
@@ -4010,7 +4010,7 @@ async function ensureBrandingRowExists() {
         INSERT INTO branding_settings (
           id, business_name, business_logo, favicon, company_description, phone, email, website, address, social_links, accent_color, theme, language, currency, shipping_fee_default, shipping_free_threshold, tax_rate, tax_id, smtp_host, smtp_port, smtp_user, smtp_pass, ip_whitelist, session_expiration_minutes, auto_backup_frequency, updated_by
         ) VALUES (
-          1, 'AL ZOAL Enterprise', '/assets/branding/zoal-main-logo.jpg', '/assets/branding/zoal-main-logo.jpg', 'Al Zoal Luxury Boutique - Al Zoal Luxury Boutique - Sovereign Enterprise Class Boutique and Media Management Platform', '+966 56 769 9315', 'alzoal3003@gmail.com', 'https://alzoal.sa', 'Abu Bakr As Siddiq Rd, Almuallimeen, Al Hofuf 36361, Saudi Arabia', $1, '#D4AF37', 'dark', 'en', 'SAR', 35, 500, 15, 'VAT-789-ZOAL-99', 'smtp.zoal-cloud.sa', '587', 'relays@zoal.sa', '**********', '0.0.0.0/0', 120, 'daily', 'System'
+          1, 'AL ZOAL Enterprise', '/images/branding/zoal%20logo.4.jpeg', '/images/branding/zoal%20logo.4.jpeg', 'Al Zoal Luxury Boutique - Al Zoal Luxury Boutique - Sovereign Enterprise Class Boutique and Media Management Platform', '+966 56 769 9315', 'alzoal3003@gmail.com', 'https://alzoal.sa', 'Abu Bakr As Siddiq Rd, Almuallimeen, Al Hofuf 36361, Saudi Arabia', $1, '#D4AF37', 'dark', 'en', 'SAR', 35, 500, 15, 'VAT-789-ZOAL-99', 'smtp.zoal-cloud.sa', '587', 'relays@zoal.sa', '**********', '0.0.0.0/0', 120, 'daily', 'System'
         )
       `, [defaultSocial]);
     }
@@ -4026,8 +4026,8 @@ app.get('/api/branding', async (req, res) => {
   // connection on every branding request and keeps branding available in serverless.
   const defaults = {
     businessName: 'AL ZOAL Enterprise',
-    businessLogo: '/assets/branding/zoal-main-logo.jpg',
-    favicon: '/assets/branding/zoal-main-logo.jpg',
+    businessLogo: '/images/branding/zoal%20logo.4.jpeg',
+    favicon: '/images/branding/zoal%20logo.4.jpeg',
     address: 'Abu Bakr As Siddiq Rd, Almuallimeen, Al Hofuf 36361, Saudi Arabia',
     email: 'alzoal3003@gmail.com',
     phone: '+966 56 769 9315',
@@ -4104,8 +4104,8 @@ app.post('/api/branding', authenticateRequest, requireRole(['manager']), async (
 
     // Backend Validation with safe fallbacks
     const businessName = String(config.businessName || 'AL ZOAL Enterprise').trim().slice(0, 255);
-    const businessLogo = config.businessLogo || '/assets/branding/zoal-main-logo.jpg';
-    const favicon = config.favicon || '/assets/branding/zoal-main-logo.jpg';
+    const businessLogo = config.businessLogo || '/images/branding/zoal%20logo.4.jpeg';
+    const favicon = config.favicon || '/images/branding/zoal%20logo.4.jpeg';
     const companyDescription = config.companyDescription || 'Al Zoal Luxury Boutique - Sovereign Enterprise Class Boutique and Media Management Platform';
     const phone = config.phone || '+966 56 769 9315';
     const email = config.email || 'alzoal3003@gmail.com';
