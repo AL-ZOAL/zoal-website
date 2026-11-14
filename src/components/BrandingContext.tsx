@@ -40,7 +40,7 @@ const DEFAULT_SETTINGS: GlobalSettings = {
 };
 
 const getValidLogo = (logoPath: any): string => {
-  if (typeof logoPath === 'string' && logoPath.trim() !== '' && !logoPath.includes('logo.svg') && !logoPath.includes('zoal-logo.jpg') && !logoPath.includes('zoal-logo-4.jpg')) return logoPath;
+  if (typeof logoPath === 'string' && logoPath.trim() !== '' && !/logo\.svg|zoal-logo(?:-4)?\.jpg|zoal-main-logo\.jpg|favicon\.jpg|zoal_logo_(?:transparent|1780833068149|fixed_1780848794781)\.png/i.test(logoPath) && !/zoal(?:%20|\s)logo(?:,4-1|\.4)?\.(?:jpe?g|png)/i.test(logoPath)) return logoPath;
   return BRANDING.LOGO;
 };
 
