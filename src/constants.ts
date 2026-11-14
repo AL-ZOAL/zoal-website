@@ -4,8 +4,8 @@
  */
 
 export const BRANDING = {
-  LOGO: '/assets/branding/zoal-main-logo.jpg',
-  LOGO_DARK: '/assets/branding/zoal-main-logo.jpg',
-  LOGO_LIGHT: '/assets/branding/zoal-main-logo.jpg',
-  FAVICON: '/assets/branding/favicon.jpg'
+  LOGO: '/images/branding/zoal%20logo.4.jpeg',
+  LOGO_DARK: '/images/branding/zoal%20logo.4.jpeg',
+  LOGO_LIGHT: '/images/branding/zoal%20logo.4.jpeg',
+  FAVICON: '/images/branding/zoal%20logo.4.jpeg'
 };
