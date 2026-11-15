@@ -39,8 +39,16 @@ const DEFAULT_SETTINGS: GlobalSettings = {
   companyDescription: 'Al Zoal Luxury Boutique - Sovereign Enterprise Class Boutique and Media Management Platform', theme: 'dark'
 };
 
+const LEGACY_LOGO_PATHS = [
+  'logo.svg', 'logo-dark.svg', 'logo-light.svg',
+  'zoal-logo.jpg', 'zoal-logo-4.jpg', 'zoal-logo-4.png',
+  'zoal-main-logo.jpg', 'favicon.jpg',
+  'zoal_logo_transparent.png', 'zoal_logo_1780833068149.png',
+  'zoal_logo_fixed_1780848794781.png', 'zoal-main-logo.jpg.jpeg'
+];
+
 const getValidLogo = (logoPath: any): string => {
-  if (typeof logoPath === 'string' && logoPath.trim() !== '' && !logoPath.includes('logo.svg') && !logoPath.includes('zoal-logo.jpg') && !logoPath.includes('zoal-logo-4.jpg')) return logoPath;
+  if (typeof logoPath === 'string' && logoPath.trim() !== '' && !LEGACY_LOGO_PATHS.some((legacy) => logoPath.includes(legacy))) return logoPath;
   return BRANDING.LOGO;
 };
 
