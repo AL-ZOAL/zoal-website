@@ -441,7 +441,7 @@ export default React.memo(function Store({
                       decoding="sync"
                       onError={(e) => {
                         e.currentTarget.onerror = null;
-                        e.currentTarget.src = '/images/branding/zoal-logo-4.jpg';
+                        e.currentTarget.src = '/images/branding/zoal%20logo.4.jpeg';
                       }}
                     />
                     <div className="absolute inset-0 bg-black/60 transition-opacity duration-300 group-hover:bg-black/50" />

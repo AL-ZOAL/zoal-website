@@ -1,4 +1,4 @@
--- 037_blog_authors_compatibility.sql
+-- 067_blog_authors_compatibility.sql
 -- Production-safe compatibility migration for bilingual blog author fields.
 -- Adds only nullable columns; does not remove, rename, or alter existing data.
 

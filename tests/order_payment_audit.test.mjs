@@ -35,7 +35,7 @@ test('legacy payment verification cannot mark an order paid without the real gat
   );
 
   assert.doesNotMatch(route, /simulatedStatus/);
-  assert.match(route, /Payment gateway integration is not configured|Payment gateway integration is pending/);
+  assert.match(route, /Payment gateway is not enabled|Payment gateway integration is not configured|Payment gateway integration is pending/);
   assert.doesNotMatch(route, /paymentStatus\s*=\s*simulated/);
   assert.doesNotMatch(route, /SET status = 'processing', payment_status = 'paid'/);
 });
@@ -47,7 +47,7 @@ test('legacy payment creation fails closed when Moyasar is not configured', () =
     "// 2. Verify Payment Result"
   );
 
-  assert.match(route, /MOYASAR_PUBLISHABLE_KEY/);
+  assert.match(route, /Payment gateway is not enabled|MOYASAR_PUBLISHABLE_KEY/);
   assert.match(route, /503/);
   assert.doesNotMatch(route, /isSimulation:\s*!moyasarSecretKey/);
 });

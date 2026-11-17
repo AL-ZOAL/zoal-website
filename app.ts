@@ -92,6 +92,14 @@ import * as staffModule from './server/staff.ts';
 import * as adminModule from './server/admin.ts';
 import * as operationsModule from './server/operations.ts';
 import * as thirdPartyIntegrationsModule from './server/third_party_integrations.ts';
+import categoriesHandler from './api/categories.ts';
+import cmsSeoApp from './api/cms-seo.ts';
+import inventoryHandler from './api/inventory.ts';
+import customerInvoicesHandler from './api/customer-invoices.ts';
+import customerOrdersHandler from './api/customer-orders.ts';
+import dashboardAnalyticsHandler from './api/admin/dashboard-analytics.ts';
+import processSchedulesHandler from './api/blog/cron/process-schedules.ts';
+import paymentsHandler from './api/payments.ts';
 
 import {
   securityHeadersMiddleware,
@@ -116,14 +124,20 @@ const app = express();
 const PORT = 3000;
 
 // Shared Gemini client utility (Server-side ONLY, User-Agent set for telemetry)
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
+let _aiClient: GoogleGenAI | null = null;
+function getAiClient(): GoogleGenAI {
+  if (!_aiClient) {
+    _aiClient = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
   }
-});
+  return _aiClient;
+}
 
 // Apply high-performance dynamic compression on all payloads
 app.use(compression());
@@ -2067,19 +2081,18 @@ async function triggerInvoiceGeneratedEmail(order: any) {
   });
 }
 
-// Global Order Expiry Checker
+// Global Order Expiry Checker (request-driven / cron-triggered, serverless-safe)
 // Uses a single PostgreSQL transaction per expired order so order/payment/reservation
 // cannot be left in a partially-updated state.
-setInterval(async () => {
+export async function expireUnpaidOrders(): Promise<number> {
   const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) return;
+  if (!connectionString) return 0;
 
   const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
-
+  let expiredCount = 0;
   try {
     await client.connect();
     const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-
     const candidates = await client.query(
       `SELECT id FROM zoal_orders
        WHERE status IN ('draft', 'pending_payment')
@@ -2105,13 +2118,10 @@ setInterval(async () => {
           continue;
         }
 
-        // Release only ledger-backed reservations. The function locks the order
-        // and reservation rows and is idempotent via released_at.
         await client.query(
           `SELECT public.release_order_inventory($1, $2)`,
           [row.id, 'payment_timeout']
         );
-
         await client.query(
           `UPDATE zoal_orders
               SET status = 'failed',
@@ -2121,7 +2131,6 @@ setInterval(async () => {
             WHERE id = $1`,
           [row.id]
         );
-
         await client.query(
           `UPDATE zoal_payment_transactions
               SET payment_status = 'failed',
@@ -2131,19 +2140,38 @@ setInterval(async () => {
               AND payment_status IN ('initiated', 'pending', 'unpaid')`,
           [row.id]
         );
-
         await client.query('COMMIT');
+        expiredCount += 1;
       } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
         console.error('Failed to atomically expire order:', row.id, error);
       }
     }
+    return expiredCount;
   } catch (err) {
-    console.error('Error in background order expiration task:', err);
+    console.error('Error in order expiration task:', err);
+    return expiredCount;
   } finally {
     await client.end().catch(() => {});
   }
-}, 60000);
+}
+
+app.get('/api/orders/cron/expire-unpaid', async (req, res) => {
+  const configuredSecret = process.env.CRON_SECRET;
+  if (!configuredSecret) {
+    return res.status(503).json({ error: 'Cron endpoint is not configured.' });
+  }
+  const authHeader = req.headers.authorization || req.headers.Authorization;
+  const providedSecret =
+    typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : req.headers['x-cron-secret'];
+  if (!providedSecret || providedSecret !== configuredSecret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const expiredCount = await expireUnpaidOrders();
+  return res.json({ success: true, expiredCount });
+});
 
 // 1. Create Payment Session
 app.post('/api/payments/create', authenticateRequest, async (_req, res) => {
@@ -2182,23 +2210,20 @@ const handleManualOrderCancel = async (req: any, res: any) => {
     return res.status(400).json({ error: 'Order ID is required for cancellation.' });
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = getServiceSupabaseClient();
   const connectionString = process.env.DATABASE_URL;
 
   try {
     if (connectionString) {
       const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
       await client.connect();
-
       try {
         await client.query('BEGIN');
 
-        // Lock order row safely using FOR UPDATE
         const orderRes = await client.query(
           `SELECT id, status, payment_status, notes FROM zoal_orders WHERE id = $1 FOR UPDATE`,
           [orderId]
         );
-
         if (orderRes.rows.length === 0) {
           await client.query('ROLLBACK');
           return res.status(404).json({ error: `Order ${orderId} not found.` });
@@ -2208,7 +2233,6 @@ const handleManualOrderCancel = async (req: any, res: any) => {
         const currentStatus = (order.status || '').toLowerCase();
         const currentPaymentStatus = (order.payment_status || '').toLowerCase();
 
-        // Idempotency Gate: If order is already cancelled, return safe deterministic response
         if (currentStatus === 'cancelled' || currentPaymentStatus === 'cancelled') {
           await client.query('ROLLBACK');
           return res.json({
@@ -2220,66 +2244,34 @@ const handleManualOrderCancel = async (req: any, res: any) => {
           });
         }
 
-        // Lock required order items
-        const itemsRes = await client.query(
-          `SELECT product_id, quantity FROM zoal_order_items WHERE order_id = $1 FOR UPDATE`,
-          [orderId]
-        );
-
         const cancelNote = ` [Manual Cancellation: ${reason}]`;
+        const isPaid = currentPaymentStatus === 'paid' || currentStatus === 'processing' || currentStatus === 'shipped' || currentStatus === 'delivered' || currentStatus === 'completed';
 
-        if (currentPaymentStatus === 'paid' || currentStatus === 'processing' || currentStatus === 'shipped' || currentStatus === 'delivered' || currentStatus === 'completed') {
-          // CASE B — PAID / CAPTURED
-          // Capture converted reservation into physical deduction. Re-stock physical quantity (capped at max_stock).
-          const updateOrderRes = await client.query(
-            `UPDATE zoal_orders
-             SET status = 'cancelled', payment_status = 'refunded', notes = COALESCE(notes, '') || $1, updated_at = NOW()
-             WHERE id = $2 AND status != 'cancelled'
-             RETURNING id`,
-            [cancelNote, orderId]
-          );
+        const updateOrderRes = await client.query(
+          `UPDATE zoal_orders
+           SET status = 'cancelled', payment_status = $1, notes = COALESCE(notes, '') || $2, updated_at = NOW()
+           WHERE id = $3 AND status != 'cancelled'
+           RETURNING id`,
+          [isPaid ? 'refunded' : 'failed', cancelNote, orderId]
+        );
+        if (updateOrderRes.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return res.json({
+            success: true,
+            alreadyCancelled: true,
+            orderId,
+            message: 'Order is already cancelled.'
+          });
+        }
 
-          if (updateOrderRes.rowCount === 0) {
-            await client.query('ROLLBACK');
-            return res.json({
-              success: true,
-              alreadyCancelled: true,
-              orderId,
-              message: 'Order is already cancelled.'
-            });
-          }
-
+        if (isPaid) {
           await client.query(
             `UPDATE zoal_payment_transactions
              SET payment_status = 'refunded', refund_reason = $1, updated_at = NOW()
              WHERE order_id = $2 AND payment_status = 'paid'`,
             [reason, orderId]
           );
-
-          // Restore physical stock per item targeting product_id + warehouse_id
-          for (const item of itemsRes.rows) {
-            const whRes = await client.query(
-              `SELECT warehouse_id FROM zoal_inventory WHERE product_id = $1 LIMIT 1`,
-              [item.product_id]
-            );
-            const warehouseId = whRes.rows[0]?.warehouse_id;
-
-            if (!warehouseId) {
-              await client.query('ROLLBACK');
-              return res.status(400).json({
-                error: `Warehouse context missing for product ${item.product_id}. Cancellation aborted.`
-              });
-            }
-
-            await client.query(
-              `UPDATE zoal_inventory
-               SET quantity = LEAST(COALESCE(max_stock, quantity + $1), quantity + $1),
-                   updated_at = NOW()
-               WHERE product_id = $2 AND warehouse_id = $3`,
-              [item.quantity, item.product_id, warehouseId]
-            );
-          }
-
+          await client.query(`SELECT public.restock_paid_order_inventory($1, $2)`, [orderId, reason]);
           await client.query('COMMIT');
           return res.json({
             success: true,
@@ -2289,59 +2281,14 @@ const handleManualOrderCancel = async (req: any, res: any) => {
             inventoryAction: 'physical_stock_restocked',
             message: 'Paid order cancelled successfully. Physical inventory restored.'
           });
-
         } else {
-          // CASE A — UNPAID / PENDING PAYMENT
-          // Release active reserved_quantity. Physical quantity remains unchanged.
-          const updateOrderRes = await client.query(
-            `UPDATE zoal_orders
-             SET status = 'cancelled', payment_status = 'failed', notes = COALESCE(notes, '') || $1, updated_at = NOW()
-             WHERE id = $2 AND status != 'cancelled'
-             RETURNING id`,
-            [cancelNote, orderId]
-          );
-
-          if (updateOrderRes.rowCount === 0) {
-            await client.query('ROLLBACK');
-            return res.json({
-              success: true,
-              alreadyCancelled: true,
-              orderId,
-              message: 'Order is already cancelled.'
-            });
-          }
-
           await client.query(
             `UPDATE zoal_payment_transactions
              SET payment_status = 'failed', updated_at = NOW()
              WHERE order_id = $1 AND payment_status IN ('initiated', 'pending', 'unpaid', 'failed')`,
             [orderId]
           );
-
-          // Release reserved_quantity per item targeting product_id + warehouse_id
-          for (const item of itemsRes.rows) {
-            const whRes = await client.query(
-              `SELECT warehouse_id FROM zoal_inventory WHERE product_id = $1 LIMIT 1`,
-              [item.product_id]
-            );
-            const warehouseId = whRes.rows[0]?.warehouse_id;
-
-            if (!warehouseId) {
-              await client.query('ROLLBACK');
-              return res.status(400).json({
-                error: `Warehouse context missing for product ${item.product_id}. Cancellation aborted.`
-              });
-            }
-
-            await client.query(
-              `UPDATE zoal_inventory
-               SET reserved_quantity = GREATEST(0, reserved_quantity - $1),
-                   updated_at = NOW()
-               WHERE product_id = $2 AND warehouse_id = $3`,
-              [item.quantity, item.product_id, warehouseId]
-            );
-          }
-
+          await client.query(`SELECT public.release_order_inventory($1, $2)`, [orderId, reason]);
           await client.query('COMMIT');
           return res.json({
             success: true,
@@ -2360,9 +2307,8 @@ const handleManualOrderCancel = async (req: any, res: any) => {
       }
     }
 
-    // Fallback Supabase implementation
     if (!supabase) {
-      return res.status(500).json({ error: 'Database service unavailable.' });
+      return res.status(503).json({ error: 'Database service-role client unavailable.' });
     }
 
     const { data: order } = await supabase
@@ -2398,44 +2344,10 @@ const handleManualOrderCancel = async (req: any, res: any) => {
       })
       .eq('id', orderId);
 
-    const { data: items } = await supabase
-      .from('zoal_order_items')
-      .select('product_id, quantity')
-      .eq('order_id', orderId);
-
-    if (items) {
-      for (const item of items) {
-        const { data: inv } = await supabase
-          .from('zoal_inventory')
-          .select('quantity, reserved_quantity, max_stock, warehouse_id')
-          .eq('product_id', item.product_id)
-          .maybeSingle();
-
-        if (inv) {
-          const warehouseId = inv.warehouse_id;
-          if (isPaid) {
-            const currentQty = Number(inv.quantity || 0);
-            const maxStock = inv.max_stock !== null ? Number(inv.max_stock) : null;
-            let newQty = currentQty + Number(item.quantity);
-            if (maxStock !== null && newQty > maxStock) newQty = maxStock;
-
-            await supabase
-              .from('zoal_inventory')
-              .update({ quantity: newQty, updated_at: new Date().toISOString() })
-              .eq('product_id', item.product_id)
-              .eq('warehouse_id', warehouseId);
-          } else {
-            const currentReserved = Number(inv.reserved_quantity || 0);
-            const newReserved = Math.max(0, currentReserved - Number(item.quantity));
-
-            await supabase
-              .from('zoal_inventory')
-              .update({ reserved_quantity: newReserved, updated_at: new Date().toISOString() })
-              .eq('product_id', item.product_id)
-              .eq('warehouse_id', warehouseId);
-          }
-        }
-      }
+    const rpcName = isPaid ? 'restock_paid_order_inventory' : 'release_order_inventory';
+    const { error: invRpcError } = await supabase.rpc(rpcName, { p_order_id: orderId, p_reason: reason });
+    if (invRpcError) {
+      throw invRpcError;
     }
 
     return res.json({
@@ -2445,7 +2357,6 @@ const handleManualOrderCancel = async (req: any, res: any) => {
       paymentStatus: isPaid ? 'refunded' : 'cancelled',
       message: 'Order cancelled successfully.'
     });
-
   } catch (err: any) {
     console.error('Error cancelling order:', err);
     return res.status(500).json({ error: err.message || 'Failed to cancel order.' });
@@ -2454,7 +2365,6 @@ const handleManualOrderCancel = async (req: any, res: any) => {
 
 app.post('/api/orders/:id/cancel', authenticateRequest, requireRole(['admin', 'manager', 'staff']), handleManualOrderCancel);
 app.post('/api/orders/cancel', authenticateRequest, requireRole(['admin', 'manager', 'staff']), handleManualOrderCancel);
-
 
 // Enterprise AI Product Intelligence Optimization
 app.post('/api/gemini/generate-product-intel', async (req, res) => {
@@ -2503,7 +2413,7 @@ Generate the following fields in the requested JSON structure:
   }
 
   try {
-    const interaction = await ai.interactions.create({
+    const interaction = await getAiClient().interactions.create({
       model: 'gemini-3.6-flash',
       input: prompt,
       response_format: {
@@ -2686,8 +2596,8 @@ const mapBrandingToSafeClientSettings = (row: any) => {
 
   return {
     businessName: row.business_name || 'AL ZOAL Enterprise',
-    businessLogo: row.business_logo || '/assets/branding/zoal-main-logo.jpg',
-    favicon: row.favicon || '/assets/branding/zoal-main-logo.jpg',
+    businessLogo: row.business_logo || '/images/branding/zoal%20logo.4.jpeg',
+    favicon: row.favicon || '/images/branding/zoal%20logo.4.jpeg',
     address: row.address || 'Abu Bakr As Siddiq Rd, Almuallimeen, Al Hofuf 36361, Saudi Arabia',
     email: row.email || 'alzoal3003@gmail.com',
     phone: row.phone || '+966 56 769 9315',
@@ -2921,7 +2831,7 @@ async function ensureBrandingRowExists() {
         INSERT INTO branding_settings (
           id, business_name, business_logo, favicon, company_description, phone, email, website, address, social_links, accent_color, theme, language, currency, shipping_fee_default, shipping_free_threshold, tax_rate, tax_id, smtp_host, smtp_port, smtp_user, smtp_pass, ip_whitelist, session_expiration_minutes, auto_backup_frequency, updated_by
         ) VALUES (
-          1, 'AL ZOAL Enterprise', '/assets/branding/zoal-main-logo.jpg', '/assets/branding/zoal-main-logo.jpg', 'Al Zoal Luxury Boutique - Al Zoal Luxury Boutique - Sovereign Enterprise Class Boutique and Media Management Platform', '+966 56 769 9315', 'alzoal3003@gmail.com', 'https://alzoal.sa', 'Abu Bakr As Siddiq Rd, Almuallimeen, Al Hofuf 36361, Saudi Arabia', $1, '#D4AF37', 'dark', 'en', 'SAR', 35, 500, 15, 'VAT-789-ZOAL-99', 'smtp.zoal-cloud.sa', '587', 'relays@zoal.sa', '**********', '0.0.0.0/0', 120, 'daily', 'System'
+          1, 'AL ZOAL Enterprise', '/images/branding/zoal%20logo.4.jpeg', '/images/branding/zoal%20logo.4.jpeg', 'Al Zoal Luxury Boutique - Al Zoal Luxury Boutique - Sovereign Enterprise Class Boutique and Media Management Platform', '+966 56 769 9315', 'alzoal3003@gmail.com', 'https://alzoal.sa', 'Abu Bakr As Siddiq Rd, Almuallimeen, Al Hofuf 36361, Saudi Arabia', $1, '#D4AF37', 'dark', 'en', 'SAR', 35, 500, 15, 'VAT-789-ZOAL-99', 'smtp.zoal-cloud.sa', '587', 'relays@zoal.sa', '**********', '0.0.0.0/0', 120, 'daily', 'System'
         )
       `, [defaultSocial]);
     }
@@ -2937,8 +2847,8 @@ app.get('/api/branding', async (req, res) => {
   // connection on every branding request and keeps branding available in serverless.
   const defaults = {
     businessName: 'AL ZOAL Enterprise',
-    businessLogo: '/assets/branding/zoal-main-logo.jpg',
-    favicon: '/assets/branding/zoal-main-logo.jpg',
+    businessLogo: '/images/branding/zoal%20logo.4.jpeg',
+    favicon: '/images/branding/zoal%20logo.4.jpeg',
     address: 'Abu Bakr As Siddiq Rd, Almuallimeen, Al Hofuf 36361, Saudi Arabia',
     email: 'alzoal3003@gmail.com',
     phone: '+966 56 769 9315',
@@ -3015,8 +2925,8 @@ app.post('/api/branding', authenticateRequest, requireRole(['manager']), async (
 
     // Backend Validation with safe fallbacks
     const businessName = String(config.businessName || 'AL ZOAL Enterprise').trim().slice(0, 255);
-    const businessLogo = config.businessLogo || '/assets/branding/zoal-main-logo.jpg';
-    const favicon = config.favicon || '/assets/branding/zoal-main-logo.jpg';
+    const businessLogo = config.businessLogo || '/images/branding/zoal%20logo.4.jpeg';
+    const favicon = config.favicon || '/images/branding/zoal%20logo.4.jpeg';
     const companyDescription = config.companyDescription || 'Al Zoal Luxury Boutique - Sovereign Enterprise Class Boutique and Media Management Platform';
     const phone = config.phone || '+966 56 769 9315';
     const email = config.email || 'alzoal3003@gmail.com';
@@ -3786,7 +3696,7 @@ Generate the translated fields in the requested JSON structure:
   }
 
   try {
-    const interaction = await ai.interactions.create({
+    const interaction = await getAiClient().interactions.create({
       model: 'gemini-3.6-flash',
       input: prompt,
       response_format: {
@@ -3857,7 +3767,7 @@ app.post('/api/support/ai-responder', requirePermission('can_manage_support'), a
 
     const prompt = `System Persona:\n${customPersona}\n\nKnowledge Base:\n${kbContext}\n\nRecent Ticket History:\n${conversationHistory}\n\nCustomer Inquiry:\n${customerQuery}\n\nTask: Draft a polished, ultra-luxurious, helpful, and concise customer support reply as AL ZOAL VIP Concierge. Return only the response text.`;
 
-    const interaction = await ai.interactions.create({
+    const interaction = await getAiClient().interactions.create({
       model: 'gemini-2.5-flash',
       input: prompt
     });
@@ -4527,6 +4437,19 @@ ${paths.map(p => ` - ${p}`).join('\n')}`);
   }
 });
 
+// Mount additional API routes previously routed only via Vercel config
+app.get('/api/cms/settings', cmsModule.getCmsSettings);
+app.put('/api/cms/settings/:key', authenticateRequest, requireRole(['staff', 'manager', 'admin', 'owner']), cmsModule.upsertCmsSetting);
+app.use(cmsSeoApp);
+app.all('/api/categories', (req, res, next) => Promise.resolve(categoriesHandler(req, res)).catch(next));
+app.all('/api/inventory', (req, res, next) => Promise.resolve(inventoryHandler(req, res)).catch(next));
+app.all('/api/customer-invoices', (req, res, next) => Promise.resolve(customerInvoicesHandler(req, res)).catch(next));
+app.all('/api/orders/my-orders', (req, res, next) => Promise.resolve(customerOrdersHandler(req, res)).catch(next));
+app.all('/api/admin/dashboard-analytics', (req, res, next) => Promise.resolve(dashboardAnalyticsHandler(req, res)).catch(next));
+app.all('/api/blog/cron/process-schedules', (req, res, next) => Promise.resolve(processSchedulesHandler(req, res)).catch(next));
+app.get('/api/payments/config', (req, res, next) => Promise.resolve(paymentsHandler(req, res)).catch(next));
+app.post('/api/payments/record', (req, res, next) => Promise.resolve(paymentsHandler(req, res)).catch(next));
+
 // Vite & Static file serving setup
 async function startServer() {
   // Initialize local file-based database safely
@@ -4539,9 +4462,17 @@ async function startServer() {
   // Sync seed users to active database (Supabase) asynchronously
   // Seeding disabled in Supabase migration
 
+  // Never allow unmatched /api/* requests to fall through to Vite or SPA HTML fallback
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'API endpoint not found.' });
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+      },
       appType: 'custom',
     });
     app.use(vite.middlewares);
@@ -4594,12 +4525,18 @@ async function startServer() {
   }
 
   if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
-    app.listen(PORT, '0.0.0.0', () => {
+    const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server running on port ${PORT}`);
+    });
+    server.on('error', (err) => {
+      console.error('Server listen error:', err);
     });
   }
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Fatal server startup error:', err);
+  process.exit(1);
+});
 
 export default app;

@@ -207,9 +207,5 @@ export async function runAutonomousHealthCheck() {
   }
 }
 
-const globalMonitor = globalThis as typeof globalThis & { __zoalHealthMonitorStarted?: boolean };
-if (!globalMonitor.__zoalHealthMonitorStarted) {
-  globalMonitor.__zoalHealthMonitorStarted = true;
-  setTimeout(() => void runAutonomousHealthCheck(), 10_000);
-  setInterval(() => void runAutonomousHealthCheck(), MONITOR_INTERVAL_MS);
-}
+// Health monitoring is intentionally request-driven (serverless-safe).
+// Invoke runAutonomousHealthCheck() from health endpoints or authenticated cron triggers.

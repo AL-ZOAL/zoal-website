@@ -237,14 +237,15 @@ test('P0: Cancellation and expiry use reservation ledger release instead of dire
 
 test('P0: Staff order status handler uses the validated orderId variable', () => {
   const staffSource = fs.readFileSync(new URL('../src/app/api/staff/route.ts', import.meta.url), 'utf8');
-  assert.match(staffSource, /const orderId = body\.orderId/);
-  assert.doesNotMatch(staffSource, /eq\('id', orderId\)/);
+  assert.match(staffSource, /const orderId = String\(body\.orderId\)\.trim\(\)/);
+  assert.match(staffSource, /\.eq\('id', orderId\)/);
 });
 
 
 test('P0: Legacy checkout has no direct reserved_quantity writes', () => {
   const appSource = fs.readFileSync(new URL('../app.ts', import.meta.url), 'utf8');
-  assert.match(appSource, /reserve_order_inventory/);
+  assert.match(appSource, /release_order_inventory/);
+  assert.match(appSource, /canonical atomic checkout flow/);
   assert.doesNotMatch(appSource, /reserved_quantity\s*:/);
   assert.doesNotMatch(appSource, /\.from\(['"]zoal_inventory['"]\)[\s\S]*\.update\(/);
 });

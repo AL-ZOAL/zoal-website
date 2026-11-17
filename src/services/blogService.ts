@@ -18,6 +18,11 @@ async function getAuthHeaders(contentType: string | null = 'application/json') {
   return headers;
 }
 
+export function mapCategoryName(name?: string): string {
+  if (!name) return 'General Editorial';
+  return name.trim();
+}
+
 export const blogService = {
   async getPosts(params?: { 
     category?: string; 

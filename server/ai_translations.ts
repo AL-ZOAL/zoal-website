@@ -5,14 +5,20 @@ import pg from 'pg';
 const { Client } = pg;
 
 // Shared Gemini client utility
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
+let _aiClient: GoogleGenAI | null = null;
+function getAiClient(): GoogleGenAI {
+  if (!_aiClient) {
+    _aiClient = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY || '',
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
   }
-});
+  return _aiClient;
+}
 
 // Helper to get raw pg client for transaction safety
 function getPgClient() {
@@ -183,7 +189,7 @@ Linguistic directives:
 4. Correct grammatical or contextual inconsistencies.
 5. Provide ONLY the final translation. Do NOT wrap in quotes, do NOT write notes or explanations, do NOT add conversational comments.`;
 
-      const response = await ai.models.generateContent({
+      const response = await getAiClient().models.generateContent({
         model: 'gemini-3.5-flash', // Using compliant robust model
         contents: promptText,
       });
@@ -1202,7 +1208,7 @@ Original Text: "${job.source_text}"
 Provide ONLY the final translation without quotes or extra conversational text.`;
 
       if (process.env.GEMINI_API_KEY) {
-        const response = await ai.models.generateContent({
+        const response = await getAiClient().models.generateContent({
           model: 'gemini-3.5-flash',
           contents: promptText
         });
@@ -1269,8 +1275,13 @@ Provide ONLY the final translation without quotes or extra conversational text.`
   }
 }
 
-// Start queue worker interval every 3 seconds
-setInterval(processNextQueueJob, 3000);
+// Queue worker runs on-demand when translation jobs are queued or triggered (serverless-safe).
+export async function drainTranslationQueue(maxJobs = 3) {
+  for (let i = 0; i < maxJobs; i += 1) {
+    if (isWorkerPaused || isWorkerProcessing) break;
+    await processNextQueueJob();
+  }
+}
 
 /**
  * Upsert queue result into zoal_ai_translations table

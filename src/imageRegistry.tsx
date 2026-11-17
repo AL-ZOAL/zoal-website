@@ -37,7 +37,7 @@ export const IMAGE_FALLBACKS: Record<string, string> = {
   'thobes.jpg': '/images/collections/thobes.jpeg',
 
   // Branches
-  '/src/assets/images/branch-al-hofuf.jpg': '/images/branding/zoal-logo-4.jpg',
+  '/src/assets/images/branch-al-hofuf.jpg': '/images/branding/zoal%20logo.4.jpeg',
 
   // Blog / Articles
   '/src/assets/images/blog-saffron-ritual.jpg': '/images/collections/coffee.jpeg',

@@ -471,8 +471,10 @@ export async function deleteBlogPost(req: Request, res: Response) {
 // --- SCHEDULES & AUTOMATIC PUBLISHER ---
 
 export async function processScheduledBlogPosts() {
-  const supabase = getServiceSupabaseClient() || getSupabaseClient();
-  if (!supabase) return;
+  const supabase = getServiceSupabaseClient();
+  if (!supabase) {
+    throw new Error('Supabase service-role client is not configured for scheduled publishing.');
+  }
 
   try {
     const nowISO = new Date().toISOString();
@@ -547,16 +549,9 @@ export async function processScheduledBlogPosts() {
   }
 }
 
-// Run worker interval continuously
-if (typeof setInterval !== 'undefined') {
-  setTimeout(() => {
-    processScheduledBlogPosts().catch(err => console.error('Initial scheduler run error:', err));
-  }, 2000);
-
-  setInterval(() => {
-    processScheduledBlogPosts().catch(err => console.error('Interval scheduler run error:', err));
-  }, 30000);
-}
+// Scheduler execution is intentionally request-driven.
+// Vercel/serverless instances must not rely on process-level timers for production scheduling.
+// The dedicated /api/blog/cron/process-schedules endpoint is the authoritative trigger.
 
 export async function handleCronProcessSchedules(req: Request, res: Response) {
   const configuredSecret = process.env.CRON_SECRET;
@@ -655,8 +650,7 @@ export async function scheduleBlogPost(req: Request, res: Response) {
     .update({ status: 'scheduled', updated_at: new Date().toISOString() })
     .eq('id', post_id);
 
-  // Trigger immediate check in case schedule is due right away
-  processScheduledBlogPosts().catch(() => {});
+  // Scheduling is processed by the dedicated authenticated cron endpoint.
 
   await supabase.from('zoal_blog_audit_logs').insert({
     action: 'SCHEDULE_POST',

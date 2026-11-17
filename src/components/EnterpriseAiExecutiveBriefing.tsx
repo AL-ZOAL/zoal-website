@@ -233,22 +233,60 @@ export const EnterpriseAiExecutiveBriefing: React.FC = () => {
     return briefings.filter(b => typeFilter === 'All' || b.briefing_type === typeFilter);
   }, [briefings, typeFilter]);
 
-  // Markdown parsing helper
+  const escapeHtml = (raw: string) =>
+    raw
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  // Markdown parsing helper (HTML-escaped)
   const renderMarkdown = (text?: string) => {
     if (!text) return '';
-    return text
+    return escapeHtml(text)
       .split('\n')
-      .map((line, idx) => {
-        let trimmed = line.trim();
+      .map((line) => {
+        const trimmed = line.trim();
         if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
-          let content = trimmed.replace(/^[\*\-]\s*/, '');
-          content = content.replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-bold">$1</strong>');
-          return `<li key=${idx} class="text-zinc-400 text-[11px] leading-relaxed list-disc ml-4 mb-1 font-sans">${content}</li>`;
+          const content = trimmed.replace(/^[\*\-]\s*/, '').replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-bold">$1</strong>');
+          return `<li class="text-zinc-400 text-[11px] leading-relaxed list-disc ml-4 mb-1 font-sans">${content}</li>`;
         }
-        let content = line.replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-bold">$1</strong>');
-        return `<p key=${idx} class="text-zinc-300 text-[11px] leading-relaxed mb-2.5 font-sans">${content}</p>`;
+        const content = line.replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-bold">$1</strong>');
+        return `<p class="text-zinc-300 text-[11px] leading-relaxed mb-2.5 font-sans">${content}</p>`;
       })
       .join('');
+  };
+
+  // Safe React node renderer (zero raw HTML sinks)
+  const renderSafeInline = (text: string) => {
+    const parts = text.split(/(\*\*.*?\*\*)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+        return <strong key={i} className="text-white font-bold">{part.slice(2, -2)}</strong>;
+      }
+      return <React.Fragment key={i}>{part}</React.Fragment>;
+    });
+  };
+
+  const renderSafeMarkdownNodes = (text?: string) => {
+    if (!text) return null;
+    return text.split('\n').map((line, idx) => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
+        const content = trimmed.replace(/^[\*\-]\s*/, '');
+        return (
+          <li key={idx} className="text-zinc-400 text-[11px] leading-relaxed list-disc ml-4 mb-1 font-sans">
+            {renderSafeInline(content)}
+          </li>
+        );
+      }
+      return (
+        <p key={idx} className="text-zinc-300 text-[11px] leading-relaxed mb-2.5 font-sans">
+          {renderSafeInline(line)}
+        </p>
+      );
+    });
   };
 
   return (
@@ -427,12 +465,12 @@ export const EnterpriseAiExecutiveBriefing: React.FC = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-white/5">
                       <div className="space-y-2">
                         <h4 className="text-red-400 text-[10.5px] font-mono uppercase tracking-wider border-b border-red-500/10 pb-1.5 font-bold">Identified Security & Logistic Risks</h4>
-                        <ul className="space-y-1 font-sans text-xs" dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedBriefing.risks) }} />
+                        <ul className="space-y-1 font-sans text-xs">{renderSafeMarkdownNodes(selectedBriefing.risks)}</ul>
                       </div>
 
                       <div className="space-y-2">
                         <h4 className="text-emerald-400 text-[10.5px] font-mono uppercase tracking-wider border-b border-emerald-500/10 pb-1.5 font-bold">Sovereign Directives & Actions</h4>
-                        <ul className="space-y-1 font-sans text-xs" dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedBriefing.recommendations) }} />
+                        <ul className="space-y-1 font-sans text-xs">{renderSafeMarkdownNodes(selectedBriefing.recommendations)}</ul>
                       </div>
                     </div>
                   </>

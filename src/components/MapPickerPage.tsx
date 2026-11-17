@@ -4,6 +4,15 @@ import { MapPin, Check, X, ZoomIn, ZoomOut, Compass, CheckCircle2, Navigation, L
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
+interface RouteGeoJsonFeature {
+  type: 'Feature';
+  properties: Record<string, unknown>;
+  geometry: {
+    type: 'LineString';
+    coordinates: [number, number][];
+  };
+}
+
 const MAPBOX_STYLES = {
   streets: 'mapbox://styles/mapbox/streets-v12',
   satellite: 'mapbox://styles/mapbox/satellite-streets-v12',
@@ -48,7 +57,7 @@ export default function MapPickerPage() {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const searchSessionRef = useRef<string>('');
   const searchAbortRef = useRef<AbortController | null>(null);
-  const routeGeoJsonRef = useRef<GeoJSON.Feature<GeoJSON.LineString> | null>(null);
+  const routeGeoJsonRef = useRef<RouteGeoJsonFeature | null>(null);
 
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapboxMapRef = useRef<mapboxgl.Map | null>(null);
@@ -310,7 +319,7 @@ export default function MapPickerPage() {
       if (!route?.geometry) throw new Error('No route found');
 
       const source = map.getSource('zoal-route') as mapboxgl.GeoJSONSource | undefined;
-      const feature = { type: 'Feature', properties: {}, geometry: route.geometry } as GeoJSON.Feature<GeoJSON.LineString>;
+      const feature = { type: 'Feature', properties: {}, geometry: route.geometry } as RouteGeoJsonFeature;
       if (source) source.setData(feature);
       else {
         map.addSource('zoal-route', { type: 'geojson', data: feature });
@@ -391,7 +400,7 @@ export default function MapPickerPage() {
     }
   };
 
-  const handleSelectSearchResult = async (suggestion: { mapbox_id: string }) => {
+  const handleSelectSearchResult = async (suggestion: { mapbox_id: string; name?: string }) => {
     const token = (import.meta.env.VITE_MAPBOX_PUBLIC_TOKEN || '').trim();
     if (!token.startsWith('pk.')) return;
     setIsSearching(true);
@@ -634,14 +643,14 @@ export default function MapPickerPage() {
               )}
             </div>
             <div className="mt-2 flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-              {[
+              {([
                 ['cafe', isAr ? 'مقاهي' : 'Cafes', Utensils],
                 ['restaurant', isAr ? 'مطاعم' : 'Restaurants', Utensils],
                 ['grocery', isAr ? 'بقالة' : 'Grocery', ShoppingCart],
                 ['gas station', isAr ? 'وقود' : 'Fuel', Fuel],
                 ['hospital', isAr ? 'مستشفيات' : 'Hospitals', HeartPulse],
                 ['mosque', isAr ? 'مساجد' : 'Mosques', Landmark],
-              ].map(([category, label, Icon]) => (
+              ] as [string, string, React.ElementType][]).map(([category, label, Icon]) => (
                 <button key={String(category)} type="button" onClick={() => handleCategorySearch(String(category))} className={`shrink-0 h-9 px-3 rounded-full bg-white/95 border text-[11px] font-semibold shadow-md flex items-center gap-1.5 ${activeCategory === category ? 'border-[#D4AF37] text-black' : 'border-black/10 text-zinc-700'}`}>
                   {React.createElement(Icon as React.ElementType, { className: 'w-3.5 h-3.5' })}{label}
                 </button>

@@ -365,3 +365,65 @@ $$;
 
 REVOKE ALL ON FUNCTION public.reserve_order_inventory(text,jsonb) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.reserve_order_inventory(text,jsonb) TO service_role;
+
+
+-- Atomically restock physical inventory when a paid order is cancelled/refunded.
+CREATE OR REPLACE FUNCTION public.restock_paid_order_inventory(
+  p_order_id text,
+  p_reason text DEFAULT 'cancelled'
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  r record;
+  v_restocked integer := 0;
+  v_order_status text;
+  v_inv public.zoal_inventory%ROWTYPE;
+BEGIN
+  SELECT status INTO v_order_status
+  FROM public.zoal_orders
+  WHERE id = p_order_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'ORDER_NOT_FOUND';
+  END IF;
+
+  FOR r IN
+    SELECT product_id, quantity
+    FROM public.zoal_order_items
+    WHERE order_id = p_order_id
+    ORDER BY product_id
+    FOR UPDATE
+  LOOP
+    SELECT * INTO v_inv
+    FROM public.zoal_inventory
+    WHERE product_id = r.product_id
+    ORDER BY warehouse_id NULLS LAST, id
+    LIMIT 1
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'WAREHOUSE_CONTEXT_MISSING:%', r.product_id;
+    END IF;
+
+    UPDATE public.zoal_inventory
+       SET quantity = CASE
+             WHEN max_stock IS NOT NULL THEN LEAST(max_stock, quantity + r.quantity)
+             ELSE quantity + r.quantity
+           END,
+           updated_at = NOW()
+     WHERE id = v_inv.id;
+
+    v_restocked := v_restocked + r.quantity;
+  END LOOP;
+
+  RETURN jsonb_build_object('order_id', p_order_id, 'restocked_quantity', v_restocked, 'reason', p_reason);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.restock_paid_order_inventory(text,text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.restock_paid_order_inventory(text,text) TO service_role;

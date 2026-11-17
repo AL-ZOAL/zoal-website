@@ -1,4 +1,5 @@
 import React from 'react';
+import { BRANDING } from '../../constants';
 
 interface PremiumBrandedLoaderProps {
   message?: string;
@@ -33,9 +34,11 @@ export const PremiumBrandedLoader: React.FC<PremiumBrandedLoaderProps> = ({
         
         {/* Center ZOAL Logo Mark */}
         <div className="relative z-10 flex items-center justify-center">
-          <span className="font-serif text-lg sm:text-xl font-bold tracking-widest text-[#D4AF37]">
-            Z
-          </span>
+          <img
+            src={BRANDING.LOGO}
+            alt="AL ZOAL"
+            className="h-10 w-10 sm:h-12 sm:w-12 rounded-full object-contain"
+          />
         </div>
       </div>
 
