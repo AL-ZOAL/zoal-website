@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { getServiceSupabaseClient, getSupabaseClient } from './supabase';
 
-const getClient = () => getServiceSupabaseClient() || getSupabaseClient();
+const getClient = () => getServiceSupabaseClient();
 const VALID_DUTY_STATUSES = new Set(['active', 'break', 'offline']);
 
 export async function getDutyStatus(req: Request, res: Response) {

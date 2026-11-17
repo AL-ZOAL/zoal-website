@@ -71,9 +71,10 @@ export function getSupabaseClient(): SupabaseClient | null {
  */
 export function getServiceSupabaseClient(): SupabaseClient | null {
   const url = getCleanSupabaseUrl();
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 
   if (!url || !serviceKey) {
+    console.error('❌ Supabase service-role client unavailable: SUPABASE_SERVICE_ROLE_KEY is not configured.');
     return null;
   }
 

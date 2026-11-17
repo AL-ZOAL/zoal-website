@@ -75,7 +75,7 @@ export default function TrackOrder({ orders: _orders, setCurrentPage, isEmbedded
       }
 
       try {
-        const response = await fetch('/api/orders?limit=100&page=1', {
+        const response = await fetch('/api/orders/my-orders?limit=100&page=1', {
           headers: { Authorization: `Bearer ${token}` },
         });
         const payload = await response.json().catch(() => null);

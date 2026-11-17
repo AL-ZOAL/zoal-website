@@ -5,7 +5,7 @@ import { ROLE_HIERARCHY, ROLE_PERMISSIONS } from '../backend/security';
 import { logAuditEvent } from './audit';
 
 function getClient() {
-  return getServiceSupabaseClient() || getSupabaseClient();
+  return getServiceSupabaseClient();
 }
 
 /**

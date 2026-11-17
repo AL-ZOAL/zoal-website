@@ -13,7 +13,7 @@ type AuthenticatedRequest = Request & {
 };
 
 function getClient() {
-  return getServiceSupabaseClient() || getSupabaseClient();
+  return getServiceSupabaseClient();
 }
 
 function requireTaxAdmin(req: AuthenticatedRequest, res: Response) {

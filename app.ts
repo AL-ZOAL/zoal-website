@@ -197,6 +197,14 @@ app.post('/api/admin/third-party-integrations', authenticateRequest, requireRole
 app.patch('/api/admin/third-party-integrations/:id', authenticateRequest, requireRole(['owner', 'admin']), thirdPartyIntegrationsModule.updateThirdPartyIntegration);
 app.delete('/api/admin/third-party-integrations/:id', authenticateRequest, requireRole(['owner', 'admin']), thirdPartyIntegrationsModule.deleteThirdPartyIntegration);
 app.post('/api/admin/third-party-integrations/:id/test', authenticateRequest, requireRole(['owner', 'admin']), thirdPartyIntegrationsModule.testThirdPartyIntegration);
+app.get('/api/admin/third-party', authenticateRequest, requireRole(['owner', 'admin']), thirdPartyIntegrationsModule.listThirdPartyIntegrations);
+app.post('/api/admin/third-party', authenticateRequest, requireRole(['owner', 'admin']), thirdPartyIntegrationsModule.createThirdPartyIntegration);
+app.patch('/api/admin/third-party/:id', authenticateRequest, requireRole(['owner', 'admin']), (req, res) => {
+  if (req.body?.status === 'active') return thirdPartyIntegrationsModule.testThirdPartyIntegration(req, res);
+  return thirdPartyIntegrationsModule.updateThirdPartyIntegration(req, res);
+});
+app.delete('/api/admin/third-party/:id', authenticateRequest, requireRole(['owner', 'admin']), thirdPartyIntegrationsModule.deleteThirdPartyIntegration);
+app.post('/api/admin/third-party/:id/test', authenticateRequest, requireRole(['owner', 'admin']), thirdPartyIntegrationsModule.testThirdPartyIntegration);
 
 app.get('/api/telemetry/metrics', authenticateRequest, requireRole(['owner', 'admin']), (req, res) => {
   res.json({
@@ -316,7 +324,7 @@ function fromSupabaseEmailLog(sel: any): EmailLog {
 }
 
 async function readEmailDbAsync(): Promise<EmailLog[]> {
-  const supabase = getSupabaseClient();
+  const supabase = getServiceSupabaseClient();
   if (supabase) {
     try {
       const { data, error } = await supabase.from('zoal_email_logs').select('*');
@@ -337,7 +345,7 @@ async function writeEmailDbAsync(logs: EmailLog[]) {
   // Always update local backup
   await writeEmailDb(logs);
 
-  const supabase = getSupabaseClient();
+  const supabase = getServiceSupabaseClient();
   if (supabase) {
     try {
       const dbLogs = logs.map(toSupabaseEmailLog);
@@ -1539,7 +1547,7 @@ app.get('/api/auth/activity-logs', authenticateRequest, requireRole(['admin']), 
 // GET /api/orders — authoritative staff/admin order roster.
 app.get('/api/orders', authenticateRequest, requireRole(['staff', 'manager', 'admin', 'owner']), async (req: any, res) => {
   try {
-    const supabase = getServiceSupabaseClient() || getSupabaseClient();
+    const supabase = getServiceSupabaseClient();
     if (!supabase) return res.status(503).json({ error: 'Database connection unavailable.' });
 
     const requestedLimit = Number(req.query.limit);
@@ -1600,7 +1608,7 @@ app.get('/api/orders', authenticateRequest, requireRole(['staff', 'manager', 'ad
 // GET /api/staff — authoritative staff roster.
 app.get('/api/staff', authenticateRequest, requireRole(['staff', 'manager', 'admin', 'owner']), async (req: any, res) => {
   try {
-    const supabase = getServiceSupabaseClient() || getSupabaseClient();
+    const supabase = getServiceSupabaseClient();
     if (!supabase) return res.status(503).json({ error: 'Database connection unavailable.' });
 
     const { data, error } = await supabase
@@ -1623,7 +1631,7 @@ app.put('/api/staff', authenticateRequest, requireRole(['staff', 'manager', 'adm
     const orderId = String(body.orderId || '').trim();
     if (!orderId) return res.status(400).json({ error: 'orderId is required.' });
 
-    const supabase = getServiceSupabaseClient() || getSupabaseClient();
+    const supabase = getServiceSupabaseClient();
     if (!supabase) return res.status(503).json({ error: 'Database connection unavailable.' });
 
     const statusMap: Record<string, string> = {
@@ -4336,7 +4344,7 @@ function extractStorageUrls(obj: any): { bucket: string; path: string }[] {
 }
 
 app.delete('/api/products/:id', authenticateRequest, requireRole(['admin', 'staff']), async (req, res) => {
-  const serviceSupabase = getServiceSupabaseClient() || getSupabaseClient();
+  const serviceSupabase = getServiceSupabaseClient();
   if (!serviceSupabase) {
     return res.status(500).json({ error: 'Database is not configured.' });
   }

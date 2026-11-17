@@ -338,7 +338,7 @@ export default function AdminDashboard({
     };
     if (!body.secret) throw new Error('A credential is required.');
     const response = editingIntegration
-      ? await fetch(`/api/admin/third-party/${editingIntegration.id}`, { method: 'PATCH', headers, body: JSON.stringify({ displayName: body.displayName, category: body.category, status: activate ? 'active' : 'inactive', secret: body.secret }) })
+      ? await fetch(`/api/admin/third-party/${editingIntegration.id}`, { method: 'PATCH', headers, body: JSON.stringify({ displayName: body.displayName, category: body.category, status: 'inactive', secret: body.secret }) })
       : await fetch('/api/admin/third-party', { method: 'POST', headers, body: JSON.stringify(body) });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload?.error || 'Unable to save integration.');
@@ -358,7 +358,9 @@ export default function AdminDashboard({
   };
   const updateThirdPartyStatus = async (id: string, status: 'active' | 'inactive') => {
     const headers = await getThirdPartyAuthHeaders();
-    const response = await fetch(`/api/admin/third-party/${id}`, { method: 'PATCH', headers, body: JSON.stringify({ status }) });
+    const response = status === 'active'
+      ? await fetch(`/api/admin/third-party/${id}/test`, { method: 'POST', headers })
+      : await fetch(`/api/admin/third-party/${id}`, { method: 'PATCH', headers, body: JSON.stringify({ status }) });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload?.error || 'Unable to update integration status.');
     await loadThirdPartyIntegrations();
