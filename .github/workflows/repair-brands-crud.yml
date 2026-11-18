@@ -25,5 +25,9 @@ jobs:
         run: git diff --check
       - name: Install dependencies
         run: npm install --package-lock=false --no-audit --no-fund
+      - name: TypeScript validation
+        run: npm run lint
+      - name: Unit and integration tests
+        run: npm test
       - name: Production build verification
         run: npm run build
