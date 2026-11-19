@@ -46,11 +46,13 @@ test('paid-order restock is idempotent and only restores consumed, not-yet-resto
   assert.doesNotMatch(fn, /LEAST\(max_stock/i);
 });
 
-test('legacy aggregate reservations are allocated across multiple inventory rows', () => {
+test('legacy aggregate reservations fail closed unless one row owns the full reservation', () => {
   const finalize = sqlFunction('finalize_order_payment');
   const fail = sqlFunction('fail_order_payment');
-  assert.match(finalize, /FOR v_inventory IN[\s\S]*?v_take := LEAST\(v_remaining, v_inventory\.reserved_quantity\)/i);
-  assert.match(finalize, /consumed_at\)[\s\S]*?v_inventory\.warehouse_id[\s\S]*?v_take/i);
-  assert.match(fail, /FOR v_inventory IN[\s\S]*?v_take := LEAST\(v_remaining, v_inventory\.reserved_quantity\)/i);
-  assert.match(fail, /released_at\)[\s\S]*?v_inventory\.warehouse_id[\s\S]*?v_take/i);
+  assert.match(finalize, /reserved_quantity >= v_item\.quantity/i);
+  assert.match(finalize, /LEGACY_INVENTORY_RESERVATION_NOT_FOUND/i);
+  assert.match(finalize, /consumed_at\)[\s\S]*?v_inventory\.warehouse_id[\s\S]*?v_item\.quantity/i);
+  assert.match(fail, /reserved_quantity >= v_item\.quantity/i);
+  assert.match(fail, /LEGACY_INVENTORY_RESERVATION_NOT_FOUND/i);
+  assert.match(fail, /released_at\)[\s\S]*?v_inventory\.warehouse_id[\s\S]*?v_item\.quantity/i);
 });
