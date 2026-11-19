@@ -625,7 +625,7 @@ BEGIN
       v_remaining := v_item.quantity;
 
       FOR v_inventory IN
-        SELECT id, quantity, reserved_quantity
+        SELECT id, warehouse_id, quantity, reserved_quantity
           FROM public.zoal_inventory
          WHERE product_id = v_item.product_id
            AND reserved_quantity > 0
@@ -644,6 +644,11 @@ BEGIN
                reserved_quantity = reserved_quantity - v_take,
                updated_at = NOW()
          WHERE id = v_inventory.id;
+
+        INSERT INTO public.zoal_order_inventory_reservations
+          (order_id, inventory_id, product_id, warehouse_id, quantity, consumed_at)
+        VALUES
+          (p_order_id, v_inventory.id, v_item.product_id, v_inventory.warehouse_id, v_take, NOW());
 
         v_remaining := v_remaining - v_take;
       END LOOP;
@@ -799,7 +804,7 @@ BEGIN
       v_remaining := v_item.quantity;
 
       FOR v_inventory IN
-        SELECT id, reserved_quantity
+        SELECT id, warehouse_id, reserved_quantity
           FROM public.zoal_inventory
          WHERE product_id = v_item.product_id
            AND reserved_quantity > 0
@@ -813,6 +818,11 @@ BEGIN
            SET reserved_quantity = reserved_quantity - v_take,
                updated_at = NOW()
          WHERE id = v_inventory.id;
+
+        INSERT INTO public.zoal_order_inventory_reservations
+          (order_id, inventory_id, product_id, warehouse_id, quantity, released_at)
+        VALUES
+          (p_order_id, v_inventory.id, v_item.product_id, v_inventory.warehouse_id, v_take, NOW());
 
         v_remaining := v_remaining - v_take;
       END LOOP;
