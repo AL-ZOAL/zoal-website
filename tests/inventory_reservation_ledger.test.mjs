@@ -25,8 +25,10 @@ test('payment finalization consumes the order-specific reservation rows across w
   assert.match(fn, /FOR v_reservation IN[\s\S]*?order_id = p_order_id[\s\S]*?product_id = v_item\.product_id/i);
   assert.match(fn, /WHERE id = v_reservation\.inventory_id/i);
   assert.match(fn, /SET consumed_at = NOW\(\)/i);
-  assert.match(fn, /v_remaining := v_item\.quantity/i);
-  assert.doesNotMatch(fn, /reserved_quantity >= v_item\.quantity/i);
+  assert.match(fn, /v_active_reserved <> v_item\.quantity/i);
+  assert.match(fn, /sum\(quantity\) FILTER[\s\S]*?released_at IS NULL AND consumed_at IS NULL/i);
+  assert.match(fn, /ORDER BY inventory_id, id[\s\S]*?FOR UPDATE/i);
+  assert.match(fn, /reserved_quantity >= v_item\.quantity/i);
 });
 
 test('failed payments release the matching reservation ledger rows', () => {
