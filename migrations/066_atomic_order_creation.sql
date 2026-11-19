@@ -396,6 +396,7 @@ DECLARE
   v_restocked integer := 0;
   v_payment_status text;
   v_ledger_count integer := 0;
+  v_unconsumed_count integer := 0;
   v_inventory_id uuid;
 BEGIN
   SELECT payment_status
@@ -445,6 +446,17 @@ BEGIN
         FROM public.zoal_inventory i
        WHERE i.id = v_inventory_id;
     END LOOP;
+  ELSE
+    SELECT count(*)
+      INTO v_unconsumed_count
+      FROM public.zoal_order_inventory_reservations
+     WHERE order_id = p_order_id
+       AND released_at IS NULL
+       AND consumed_at IS NULL;
+
+    IF v_unconsumed_count > 0 THEN
+      RAISE EXCEPTION 'ORDER_RESERVATIONS_NOT_CONSUMED';
+    END IF;
   END IF;
 
   FOR r IN
@@ -587,8 +599,10 @@ BEGIN
          WHERE id = v_reservation.inventory_id
          FOR UPDATE;
 
-        IF NOT FOUND
-           OR v_inventory.quantity < v_reservation.quantity
+        IF NOT FOUND THEN
+          RAISE EXCEPTION 'INVENTORY_ROW_MISSING_FOR_RESERVATION:%', v_reservation.id;
+        END IF;
+        IF v_inventory.quantity < v_reservation.quantity
            OR v_inventory.reserved_quantity < v_reservation.quantity THEN
           RAISE EXCEPTION 'INVENTORY_RESERVATION_INVALID:%', v_item.product_id;
         END IF;
@@ -753,7 +767,10 @@ BEGIN
          WHERE id = v_reservation.inventory_id
          FOR UPDATE;
 
-        IF NOT FOUND OR v_inventory.reserved_quantity < v_reservation.quantity THEN
+        IF NOT FOUND THEN
+          RAISE EXCEPTION 'INVENTORY_ROW_MISSING_FOR_RESERVATION:%', v_reservation.id;
+        END IF;
+        IF v_inventory.reserved_quantity < v_reservation.quantity THEN
           RAISE EXCEPTION 'INVENTORY_RESERVATION_INVALID:%', v_item.product_id;
         END IF;
 
