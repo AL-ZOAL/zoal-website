@@ -619,43 +619,35 @@ BEGIN
          WHERE id = v_reservation.id;
       END LOOP;
     ELSE
-      -- Compatibility path for orders created before the reservation ledger.
-      -- Allocate their aggregate reservation across warehouses without
-      -- requiring one warehouse to hold the entire order quantity.
-      v_remaining := v_item.quantity;
+      -- Legacy orders have no order-specific allocation ledger. Preserve the
+      -- historical single-row behavior rather than stealing another order's
+      -- aggregate reservation from a different warehouse.
+      SELECT id, warehouse_id, quantity, reserved_quantity
+        INTO v_inventory
+        FROM public.zoal_inventory
+       WHERE product_id = v_item.product_id
+         AND reserved_quantity >= v_item.quantity
+       ORDER BY warehouse_id NULLS LAST, id
+       LIMIT 1
+       FOR UPDATE;
 
-      FOR v_inventory IN
-        SELECT id, warehouse_id, quantity, reserved_quantity
-          FROM public.zoal_inventory
-         WHERE product_id = v_item.product_id
-           AND reserved_quantity > 0
-         ORDER BY warehouse_id NULLS LAST, id
-         FOR UPDATE
-      LOOP
-        EXIT WHEN v_remaining = 0;
-        v_take := LEAST(v_remaining, v_inventory.reserved_quantity);
-
-        IF v_inventory.quantity < v_take THEN
-          RAISE EXCEPTION 'INVENTORY_BELOW_RESERVED_QUANTITY:%', v_item.product_id;
-        END IF;
-
-        UPDATE public.zoal_inventory
-           SET quantity = quantity - v_take,
-               reserved_quantity = reserved_quantity - v_take,
-               updated_at = NOW()
-         WHERE id = v_inventory.id;
-
-        INSERT INTO public.zoal_order_inventory_reservations
-          (order_id, inventory_id, product_id, warehouse_id, quantity, consumed_at)
-        VALUES
-          (p_order_id, v_inventory.id, v_item.product_id, v_inventory.warehouse_id, v_take, NOW());
-
-        v_remaining := v_remaining - v_take;
-      END LOOP;
-
-      IF v_remaining > 0 THEN
-        RAISE EXCEPTION 'INVENTORY_RESERVATION_NOT_FOUND_FOR_PRODUCT:%', v_item.product_id;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'LEGACY_INVENTORY_RESERVATION_NOT_FOUND:%', v_item.product_id;
       END IF;
+      IF v_inventory.quantity < v_item.quantity THEN
+        RAISE EXCEPTION 'INVENTORY_BELOW_RESERVED_QUANTITY:%', v_item.product_id;
+      END IF;
+
+      UPDATE public.zoal_inventory
+         SET quantity = quantity - v_item.quantity,
+             reserved_quantity = reserved_quantity - v_item.quantity,
+             updated_at = NOW()
+       WHERE id = v_inventory.id;
+
+      INSERT INTO public.zoal_order_inventory_reservations
+        (order_id, inventory_id, product_id, warehouse_id, quantity, consumed_at)
+      VALUES
+        (p_order_id, v_inventory.id, v_item.product_id, v_inventory.warehouse_id, v_item.quantity, NOW());
     END IF;
   END LOOP;
 
@@ -800,36 +792,30 @@ BEGIN
          WHERE id = v_reservation.id;
       END LOOP;
     ELSE
-      -- Legacy aggregate reservations: release across warehouses.
-      v_remaining := v_item.quantity;
+      -- Legacy orders have no order-specific allocation ledger. Only release
+      -- a single row that can prove the full legacy reservation is present.
+      SELECT id, warehouse_id, reserved_quantity
+        INTO v_inventory
+        FROM public.zoal_inventory
+       WHERE product_id = v_item.product_id
+         AND reserved_quantity >= v_item.quantity
+       ORDER BY warehouse_id NULLS LAST, id
+       LIMIT 1
+       FOR UPDATE;
 
-      FOR v_inventory IN
-        SELECT id, warehouse_id, reserved_quantity
-          FROM public.zoal_inventory
-         WHERE product_id = v_item.product_id
-           AND reserved_quantity > 0
-         ORDER BY warehouse_id NULLS LAST, id
-         FOR UPDATE
-      LOOP
-        EXIT WHEN v_remaining = 0;
-        v_take := LEAST(v_remaining, v_inventory.reserved_quantity);
-
-        UPDATE public.zoal_inventory
-           SET reserved_quantity = reserved_quantity - v_take,
-               updated_at = NOW()
-         WHERE id = v_inventory.id;
-
-        INSERT INTO public.zoal_order_inventory_reservations
-          (order_id, inventory_id, product_id, warehouse_id, quantity, released_at)
-        VALUES
-          (p_order_id, v_inventory.id, v_item.product_id, v_inventory.warehouse_id, v_take, NOW());
-
-        v_remaining := v_remaining - v_take;
-      END LOOP;
-
-      IF v_remaining > 0 THEN
-        RAISE EXCEPTION 'INVENTORY_RESERVATION_NOT_FOUND_FOR_PRODUCT:%', v_item.product_id;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'LEGACY_INVENTORY_RESERVATION_NOT_FOUND:%', v_item.product_id;
       END IF;
+
+      UPDATE public.zoal_inventory
+         SET reserved_quantity = reserved_quantity - v_item.quantity,
+             updated_at = NOW()
+       WHERE id = v_inventory.id;
+
+      INSERT INTO public.zoal_order_inventory_reservations
+        (order_id, inventory_id, product_id, warehouse_id, quantity, released_at)
+      VALUES
+        (p_order_id, v_inventory.id, v_item.product_id, v_inventory.warehouse_id, v_item.quantity, NOW());
     END IF;
   END LOOP;
 
