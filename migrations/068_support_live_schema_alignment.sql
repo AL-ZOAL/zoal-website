@@ -6,7 +6,7 @@ RETURNS boolean AS $$
 BEGIN
   RETURN public.get_auth_user_role() IN ('owner', 'admin', 'manager', 'staff');
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 ALTER TABLE public.zoal_ticket_attachments
   ADD COLUMN IF NOT EXISTS ticket_id uuid;
