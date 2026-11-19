@@ -50,5 +50,7 @@ test('legacy aggregate reservations are allocated across multiple inventory rows
   const finalize = sqlFunction('finalize_order_payment');
   const fail = sqlFunction('fail_order_payment');
   assert.match(finalize, /FOR v_inventory IN[\s\S]*?v_take := LEAST\(v_remaining, v_inventory\.reserved_quantity\)/i);
+  assert.match(finalize, /consumed_at\)[\s\S]*?v_inventory\.warehouse_id[\s\S]*?v_take/i);
   assert.match(fail, /FOR v_inventory IN[\s\S]*?v_take := LEAST\(v_remaining, v_inventory\.reserved_quantity\)/i);
+  assert.match(fail, /released_at\)[\s\S]*?v_inventory\.warehouse_id[\s\S]*?v_take/i);
 });
