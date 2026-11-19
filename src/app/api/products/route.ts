@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { supabase, checkRateLimit, apiResponse, apiError, verifyAuthAndRole } from '../helpers';
+import { getServiceSupabaseClient } from '../../../../server/supabase';
 
 const PRODUCT_MANAGEMENT_ROLES = ['owner', 'admin', 'manager', 'staff'] as const;
 
@@ -55,8 +56,32 @@ export async function GET(req: NextRequest) {
       return apiError(error.message, 500);
     }
 
+    // Inventory is authoritative in zoal_inventory, not zoal_products.inventory.
+    // Enrich only the returned page so storefront stock filters use live relational inventory.
+    let enrichedProducts = products || [];
+    const serviceClient = getServiceSupabaseClient();
+    if (serviceClient && enrichedProducts.length > 0) {
+      const productIds = enrichedProducts.map((product: any) => product.id).filter(Boolean);
+      const { data: inventoryRows } = await serviceClient
+        .from('zoal_inventory')
+        .select('product_id,quantity,reserved_quantity')
+        .in('product_id', productIds);
+
+      if (inventoryRows) {
+        const inventoryByProduct = new Map<string, number>();
+        for (const row of inventoryRows) {
+          const available = Math.max(0, Number(row.quantity || 0) - Number(row.reserved_quantity || 0));
+          inventoryByProduct.set(row.product_id, (inventoryByProduct.get(row.product_id) || 0) + available);
+        }
+        enrichedProducts = enrichedProducts.map((product: any) => ({
+          ...product,
+          inventory: inventoryByProduct.get(product.id) ?? 0
+        }));
+      }
+    }
+
     return apiResponse({
-      products: products || [],
+      products: enrichedProducts,
       pagination: {
         page,
         limit,
@@ -165,9 +190,29 @@ export async function POST(req: NextRequest) {
       ai_product_recommendation: body.aiProductRecommendation || body.ai_product_recommendation || '',
       ai_search_optimization: body.aiSearchOptimization || body.ai_search_optimization || '',
       ai_metadata: body.aiMetadata || body.ai_metadata || {},
-      delivery_type: body.deliveryType || body.delivery_type || 'NATIONWIDE',
+      // Safe fulfillment defaults: perishable/local food must never silently become nationwide.
+      delivery_type: (
+        body.category === 'bakery' || ['Food', 'Drink'].includes(body.productType || body.product_type)
+      ) ? 'LOCAL_ONLY' : (body.deliveryType || body.delivery_type || 'NATIONWIDE'),
+      shipping_scope: Array.isArray(body.shipping_scope)
+        ? body.shipping_scope
+        : (body.category === 'bakery' || ['Food', 'Drink'].includes(body.productType || body.product_type)
+          ? ['Local Delivery', 'Pickup']
+          : ['Saudi Shipping']),
+      delivery_zones: Array.isArray(body.delivery_zones)
+        ? body.delivery_zones
+        : (body.category === 'bakery' || ['Food', 'Drink'].includes(body.productType || body.product_type)
+          ? ['Al Hofuf', 'Nearby Al Hofuf']
+          : ['Saudi Arabia']),
+      same_day: body.sameDay !== undefined
+        ? !!body.sameDay
+        : (body.category === 'bakery' || ['Food', 'Drink'].includes(body.productType || body.product_type)),
       shipping_fee: body.shippingFee !== undefined ? parseFloat(body.shippingFee) : 0,
-      delivery_days: body.deliveryDays !== undefined ? parseInt(body.deliveryDays, 10) : 3,
+      delivery_days: body.deliveryDays !== undefined
+        ? parseInt(body.deliveryDays, 10)
+        : (body.category === 'bakery' || ['Food', 'Drink'].includes(body.productType || body.product_type) ? 1 : 3),
+      pickup_location: body.pickup_location || '',
+      temperature_control: body.temperature_control !== undefined ? !!body.temperature_control : false,
       shipping_class: body.shippingClass || body.shipping_class || 'Standard',
       weight: body.weight !== undefined ? parseFloat(body.weight) : 0.5,
       dimensions: body.dimensions || { length: 10, width: 10, height: 10, unit: 'cm' },

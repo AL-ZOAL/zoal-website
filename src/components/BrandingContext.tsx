@@ -44,20 +44,22 @@ const LEGACY_LOGO_PATHS = [
   'zoal-logo.jpg', 'zoal-logo-4.jpg', 'zoal-logo-4.png',
   'zoal-main-logo.jpg', 'favicon.jpg',
   'zoal_logo_transparent.png', 'zoal_logo_1780833068149.png',
-  'zoal_logo_fixed_1780848794781.png', 'zoal-main-logo.jpg.jpeg'
+  'zoal_logo_fixed_1780848794781.png', 'zoal-main-logo.jpg.jpeg',
+  'zoal logo,4-1.jpeg', 'zoal%20logo,4-1.jpeg'
 ];
 
-const getValidLogo = (logoPath: any): string => {
+const getValidLogo = (logoPath: any, fallback: string = BRANDING.LOGO): string => {
   if (typeof logoPath === 'string' && logoPath.trim() !== '' && !LEGACY_LOGO_PATHS.some((legacy) => logoPath.includes(legacy))) return logoPath;
-  return BRANDING.LOGO;
+  return fallback;
 };
 
 export const sanitizeSettingsForClient = (raw: any): GlobalSettings => {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_SETTINGS };
-  const validLogo = getValidLogo(raw.businessLogo);
+  const validLogo = getValidLogo(raw.businessLogo, BRANDING.LOGO);
+  const validFavicon = getValidLogo(raw.favicon, BRANDING.FAVICON);
   return {
     businessName: typeof raw.businessName === 'string' && raw.businessName.trim() ? raw.businessName : DEFAULT_SETTINGS.businessName,
-    businessLogo: validLogo, favicon: BRANDING.FAVICON,
+    businessLogo: validLogo, favicon: validFavicon,
     address: typeof raw.address === 'string' ? raw.address : DEFAULT_SETTINGS.address,
     email: typeof raw.email === 'string' ? raw.email : DEFAULT_SETTINGS.email,
     phone: typeof raw.phone === 'string' ? raw.phone : DEFAULT_SETTINGS.phone,

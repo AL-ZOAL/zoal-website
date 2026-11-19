@@ -18,6 +18,45 @@ import { BlogPost } from '../../types/blog';
 import { blogService } from '../../services/blogService';
 import { SafeImage } from '../../imageRegistry';
 import { BlogComments } from './BlogComments';
+import { dispatchNotification } from '../../lib/notificationDispatcher';
+
+// Deterministic Unicode and Arabic-compatible slug generator
+export function generateHeadingSlug(text: string, existingSlugs?: Set<string>): string {
+  if (!text) return 'section';
+  const plainText = typeof text === 'string' ? text : String(text);
+  let slug = plainText
+    .normalize('NFC')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-_]+/g, '-')
+    .replace(/[^\p{L}\p{N}\-]/gu, '')
+    .replace(/^-+|-+$/g, '');
+
+  if (!slug) slug = 'section';
+
+  if (existingSlugs) {
+    let uniqueSlug = slug;
+    let counter = 1;
+    while (existingSlugs.has(uniqueSlug)) {
+      counter++;
+      uniqueSlug = `${slug}-${counter}`;
+    }
+    existingSlugs.add(uniqueSlug);
+    return uniqueSlug;
+  }
+  return slug;
+}
+
+function extractTextFromChildren(children: any): string {
+  if (typeof children === 'string') return children;
+  if (Array.isArray(children)) {
+    return children.map(extractTextFromChildren).join('');
+  }
+  if (children && typeof children === 'object' && children.props?.children) {
+    return extractTextFromChildren(children.props.children);
+  }
+  return children ? String(children) : '';
+}
 
 interface BlogArticleProps {
   post: BlogPost;
@@ -31,6 +70,7 @@ export function BlogArticle({ post, onBack, onPostClick, onAuthorClick, currentU
   const { t, i18n } = useTranslation();
   const [relatedPosts, setRelatedPosts] = useState<BlogPost[]>([]);
   const [isLiked, setIsLiked] = useState(false);
+  const [likeCount, setLikeCount] = useState(post.like_count || 0);
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
   const [headings, setHeadings] = useState<{ id: string; text: string; level: number }[]>([]);
@@ -112,10 +152,63 @@ export function BlogArticle({ post, onBack, onPostClick, onAuthorClick, currentU
     return localized(tag, 'name');
   };
 
-  // Reset expanded state when post changes
+  // Reset expanded state and load engagement state when post changes
   useEffect(() => {
     setIsExpanded(false);
+    setLikeCount(post.like_count || 0);
+
+    if (post && post.id) {
+      blogService.getLikeStatus(post.id).then(res => {
+        setIsLiked(res.liked);
+        if (typeof res.like_count === 'number') {
+          setLikeCount(res.like_count);
+        }
+      }).catch(err => {
+        console.warn('Failed to fetch like status:', err);
+      });
+
+      try {
+        const saved = localStorage.getItem('zoal_blog_bookmarks_v1');
+        if (saved) {
+          const ids: string[] = JSON.parse(saved);
+          setIsBookmarked(ids.includes(post.id));
+        } else {
+          setIsBookmarked(false);
+        }
+      } catch {
+        setIsBookmarked(false);
+      }
+    }
   }, [post]);
+
+  const handleLikeToggle = async () => {
+    if (!post?.id) return;
+    try {
+      const res = await blogService.toggleLike(post.id);
+      setIsLiked(res.liked);
+      setLikeCount(res.like_count);
+    } catch (err) {
+      console.error('Failed to toggle like:', err);
+    }
+  };
+
+  const handleBookmarkToggle = () => {
+    if (!post?.id) return;
+    const next = !isBookmarked;
+    setIsBookmarked(next);
+    try {
+      const saved = localStorage.getItem('zoal_blog_bookmarks_v1');
+      let ids: string[] = saved ? JSON.parse(saved) : [];
+      if (next) {
+        if (!ids.includes(post.id)) ids.push(post.id);
+      } else {
+        ids = ids.filter(id => id !== post.id);
+      }
+      localStorage.setItem('zoal_blog_bookmarks_v1', JSON.stringify(ids));
+    } catch (err) {
+      console.error('Failed to save bookmark locally:', err);
+    }
+  };
 
   useEffect(() => {
     if (post && post.id) {
@@ -222,12 +315,13 @@ export function BlogArticle({ post, onBack, onPostClick, onAuthorClick, currentU
 
     // Generate TOC from content
     const contentToParse = localized(post, 'content');
+    const existingTocSlugs = new Set<string>();
     const extractedHeadings = contentToParse.split('\n')
       .filter((line: string) => line.startsWith('#'))
       .map((line: string) => {
         const level = line.match(/^#+/)?.[0].length || 1;
-        const text = line.replace(/^#+\s*/, '');
-        const id = text.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const text = line.replace(/^#+\s*/, '').trim();
+        const id = generateHeadingSlug(text, existingTocSlugs);
         return { id, text, level };
       });
     setHeadings(extractedHeadings);
@@ -246,8 +340,16 @@ export function BlogArticle({ post, onBack, onPostClick, onAuthorClick, currentU
   };
 
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(currentUrl);
-    alert(t('blog.copy_link_success'));
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(currentUrl);
+    }
+    dispatchNotification({
+      type: 'system',
+      variant: 'toast',
+      title: t('blog.share', { defaultValue: 'Article Share' }),
+      message: t('blog.copy_link_success', { defaultValue: 'Link copied to clipboard.' }),
+      duration: 3000
+    });
   };
 
   // Dynamic typography styling controls
@@ -462,16 +564,19 @@ export function BlogArticle({ post, onBack, onPostClick, onAuthorClick, currentU
                 <h3 className="text-[10px] font-mono uppercase tracking-[0.3em] text-gold-pure border-b border-white/5 pb-2">{t('blog.engagement')}</h3>
                 <div className="flex flex-col gap-3">
                   <button 
-                    onClick={() => setIsLiked(!isLiked)}
+                    onClick={handleLikeToggle}
                     className={`flex items-center justify-between p-3 rounded-xs border transition-all group cursor-pointer ${
                       isLiked ? 'bg-gold-pure border-gold-pure text-black' : 'bg-zinc-950 border-white/5 text-zinc-400 hover:border-gold-pure/30'
                     }`}
                   >
-                    <span className="text-[10px] font-bold uppercase tracking-widest">{t('blog.appreciate')}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold uppercase tracking-widest">{t('blog.appreciate')}</span>
+                      {likeCount > 0 && <span className="text-[10px] font-mono font-bold">({likeCount})</span>}
+                    </div>
                     <ThumbsUp className={`w-4 h-4 ${isLiked ? 'fill-black' : 'group-hover:text-gold-pure'}`} />
                   </button>
                   <button 
-                    onClick={() => setIsBookmarked(!isBookmarked)}
+                    onClick={handleBookmarkToggle}
                     className={`flex items-center justify-between p-3 rounded-xs border transition-all group cursor-pointer ${
                       isBookmarked ? 'bg-white border-white text-black' : 'bg-zinc-950 border-white/5 text-zinc-400 hover:border-white/30'
                     }`}
@@ -563,8 +668,16 @@ export function BlogArticle({ post, onBack, onPostClick, onAuthorClick, currentU
                 >
                   <ReactMarkdown 
                     components={{
-                      h1: ({ node, ...props }) => <h1 id={props.children?.toString().toLowerCase().replace(/[^a-z0-9]+/g, '-')} {...props} />,
-                      h2: ({ node, ...props }) => <h2 id={props.children?.toString().toLowerCase().replace(/[^a-z0-9]+/g, '-')} {...props} />,
+                      h1: ({ node, ...props }) => {
+                        const text = extractTextFromChildren(props.children);
+                        const id = generateHeadingSlug(text);
+                        return <h1 id={id} {...props} />;
+                      },
+                      h2: ({ node, ...props }) => {
+                        const text = extractTextFromChildren(props.children);
+                        const id = generateHeadingSlug(text);
+                        return <h2 id={id} {...props} />;
+                      },
                     }}
                   >
                     {activeContent}
@@ -637,21 +750,41 @@ export function BlogArticle({ post, onBack, onPostClick, onAuthorClick, currentU
                   {getAuthorBio(post.zoal_blog_authors)}
                 </p>
                 <div className="flex flex-row items-center justify-start gap-3 sm:gap-4 pt-1 whitespace-nowrap">
-                  <button className="text-white hover:text-gold-pure transition-colors cursor-pointer"><TwitterIcon size={14} round /></button>
-                  <button className="text-white hover:text-gold-pure transition-colors cursor-pointer"><LinkedinIcon size={14} round /></button>
-                  <button 
-                    onClick={() => {
-                      if (onAuthorClick) {
-                        const resolvedAuthorId = post.author_id || 
-                          (post.zoal_blog_authors?.name?.includes('Charles') ? 'a2' : 
-                           post.zoal_blog_authors?.name?.includes('Amal') ? 'a3' : 'a1');
-                        onAuthorClick(resolvedAuthorId);
-                      }
-                    }}
-                    className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-gold-pure border-b border-gold-pure/30 pb-0.5 hover:border-gold-pure transition-all cursor-pointer whitespace-nowrap"
-                  >
-                    {t('blog.explore_profile')}
-                  </button>
+                  {post.zoal_blog_authors?.twitter_url ? (
+                    <a 
+                      href={post.zoal_blog_authors.twitter_url} 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      aria-label="Author Twitter"
+                      className="text-white hover:text-gold-pure transition-colors cursor-pointer"
+                    >
+                      <TwitterIcon size={14} round />
+                    </a>
+                  ) : null}
+                  {post.zoal_blog_authors?.linkedin_url ? (
+                    <a 
+                      href={post.zoal_blog_authors.linkedin_url} 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      aria-label="Author LinkedIn"
+                      className="text-white hover:text-gold-pure transition-colors cursor-pointer"
+                    >
+                      <LinkedinIcon size={14} round />
+                    </a>
+                  ) : null}
+                  {onAuthorClick && (post.author_id || post.zoal_blog_authors?.id) ? (
+                    <button 
+                      onClick={() => {
+                        const resolvedAuthorId = post.author_id || post.zoal_blog_authors?.id;
+                        if (resolvedAuthorId) {
+                          onAuthorClick(resolvedAuthorId);
+                        }
+                      }}
+                      className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-gold-pure border-b border-gold-pure/30 pb-0.5 hover:border-gold-pure transition-all cursor-pointer whitespace-nowrap"
+                    >
+                      {t('blog.explore_profile')}
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>

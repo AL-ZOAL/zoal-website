@@ -7,14 +7,20 @@ import { friendlyToUUID } from '../src/lib/uuidMapper.ts';
 const seoCache = new Map<string, any>();
 
 // Shared Gemini client utility (Server-side ONLY, User-Agent set for telemetry)
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
+let _aiClient: GoogleGenAI | null = null;
+function getAiClient(): GoogleGenAI {
+  if (!_aiClient) {
+    _aiClient = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY || '',
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
   }
-});
+  return _aiClient;
+}
 
 // Helper to query branding settings
 async function getBrandingSettings(): Promise<any> {
@@ -227,7 +233,7 @@ Ensure:
 2. Description is compelling, search-optimized, under 155 characters.
 3. Keywords are comma-separated and highly relevant.`;
 
-          const response = await ai.models.generateContent({
+          const response = await getAiClient().models.generateContent({
             model: "gemini-3.5-flash",
             contents: aiPrompt,
             config: {
@@ -321,7 +327,7 @@ Ensure:
 2. Description is elegant, under 155 characters.
 3. Keywords are comma-separated and highly relevant.`;
 
-        const response = await ai.models.generateContent({
+        const response = await getAiClient().models.generateContent({
           model: "gemini-3.5-flash",
           contents: aiPrompt,
           config: {
@@ -377,7 +383,7 @@ Ensure:
 2. Description is appealing, under 155 characters.
 3. Keywords are comma-separated and highly relevant.`;
 
-        const response = await ai.models.generateContent({
+        const response = await getAiClient().models.generateContent({
           model: "gemini-3.5-flash",
           contents: aiPrompt,
           config: {
@@ -443,7 +449,7 @@ Ensure:
 2. Description is compelling, summarizing the piece under 155 characters.
 3. Keywords are comma-separated and highly relevant.`;
 
-          const response = await ai.models.generateContent({
+          const response = await getAiClient().models.generateContent({
             model: "gemini-3.5-flash",
             contents: aiPrompt,
             config: {

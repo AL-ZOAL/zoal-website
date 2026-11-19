@@ -11,7 +11,7 @@ import { blogService } from '../../services/blogService';
 import { SafeImage } from '../../imageRegistry';
 
 interface BlogGridPageProps {
-  type: 'category' | 'tag' | 'author' | 'archive';
+  type: 'category' | 'tag' | 'author' | 'archive' | 'trending';
   id?: string;
   onBack: () => void;
   onPostClick: (post: BlogPost) => void;
@@ -24,6 +24,9 @@ export function BlogGridPage({ type, id, onBack, onPostClick }: BlogGridPageProp
   const [error, setError] = useState<string | null>(null);
   const [metaInfo, setMetaInfo] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'profile' | 'all'>(type === 'author' ? 'profile' : 'all');
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const PAGE_SIZE = 24;
 
   const localized = (obj: any, field: string) => {
     const arField = `${field}_ar`;
@@ -35,28 +38,32 @@ export function BlogGridPage({ type, id, onBack, onPostClick }: BlogGridPageProp
     const loadData = async () => {
       setLoading(true);
       setError(null);
+      setPage(1);
       try {
         let fetchedPosts: BlogPost[] = [];
         let info: any = null;
 
         if (type === 'category' && id) {
-          fetchedPosts = await blogService.getPosts({ category: id });
+          fetchedPosts = await blogService.getPosts({ category: id, page: 1, limit: PAGE_SIZE });
           const categories = await blogService.getCategories();
-          info = categories.find(c => c.id === id);
+          info = categories.find(c => c.id === id || c.slug === id);
         } else if (type === 'tag' && id) {
-          fetchedPosts = await blogService.getPosts({ tag: id });
+          fetchedPosts = await blogService.getPosts({ tag: id, page: 1, limit: PAGE_SIZE });
           const tags = await blogService.getTags();
-          info = tags.find(t => t.id === id);
+          info = tags.find(t => t.id === id || t.slug === id);
         } else if (type === 'author' && id) {
-          fetchedPosts = await blogService.getPosts();
-          fetchedPosts = fetchedPosts.filter(p => p.author_id === id);
+          // Keep author profile metrics complete; the backend applies the author filter.
+          fetchedPosts = await blogService.getPosts({ author: id });
           const authors = await blogService.getAuthors();
           info = authors.find(a => a.id === id);
+        } else if (type === 'trending') {
+          fetchedPosts = await blogService.getPosts({ sortBy: 'trending', page: 1, limit: PAGE_SIZE });
         } else {
-          fetchedPosts = await blogService.getPosts();
+          fetchedPosts = await blogService.getPosts({ page: 1, limit: PAGE_SIZE });
         }
 
         setPosts(fetchedPosts);
+        setHasMore(type !== 'author' && fetchedPosts.length === PAGE_SIZE);
         setMetaInfo(info);
       } catch (err) {
         console.error('Failed to load grid page:', err);
@@ -68,17 +75,47 @@ export function BlogGridPage({ type, id, onBack, onPostClick }: BlogGridPageProp
     loadData();
   }, [type, id]);
 
+  const loadMore = async () => {
+    if (loading || !hasMore) return;
+    const nextPage = page + 1;
+    setLoading(true);
+    setError(null);
+    try {
+      const params =
+        type === 'category' && id ? { category: id, page: nextPage, limit: PAGE_SIZE } :
+        type === 'tag' && id ? { tag: id, page: nextPage, limit: PAGE_SIZE } :
+        type === 'trending' ? { sortBy: 'trending', page: nextPage, limit: PAGE_SIZE } :
+        { page: nextPage, limit: PAGE_SIZE };
+
+      const nextPosts = await blogService.getPosts(params);
+      setPosts(prev => {
+        const existing = new Set(prev.map(post => post.id));
+        return [...prev, ...nextPosts.filter(post => !existing.has(post.id))];
+      });
+      setPage(nextPage);
+      setHasMore(nextPosts.length === PAGE_SIZE);
+    } catch (err) {
+      console.error('Failed to load more blog posts:', err);
+      setError('More articles are temporarily unavailable. Please try again later.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const getPageTitle = () => {
     if (type === 'category') {
       return localized(metaInfo, 'name') || t('blog.archive.category');
     }
     if (type === 'tag') {
-      const tagName = localized(metaInfo, 'name') || 'Tag';
+      const tagName = localized(metaInfo, 'name') || id || 'Tag';
       return `#${tagName}`;
     }
     if (type === 'author') {
       const authorName = localized(metaInfo, 'name') || t('blog.author');
       return t('blog.archive.author', { name: authorName });
+    }
+    if (type === 'trending') {
+      return t('blog.trending_title', { defaultValue: 'Trending Dispatches' });
     }
     return t('blog.archive.general');
   };
@@ -89,6 +126,9 @@ export function BlogGridPage({ type, id, onBack, onPostClick }: BlogGridPageProp
     }
     if (type === 'author') {
       return localized(metaInfo, 'bio') || t('blog.archive.author_desc');
+    }
+    if (type === 'trending') {
+      return t('blog.trending_desc', { defaultValue: 'Most engaging and widely read editorial publications.' });
     }
     return t('blog.archive.general_desc');
   };
@@ -101,18 +141,23 @@ export function BlogGridPage({ type, id, onBack, onPostClick }: BlogGridPageProp
   );
   
   const formatDate = (dateStr?: string) => {
-    if (!dateStr) return i18n.language === 'ar' ? 'مارس ٢٠٢٦' : 'March 2026';
-    try {
-      const date = new Date(dateStr);
-      return date.toLocaleDateString(i18n.language === 'ar' ? 'ar-SA' : 'en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-    } catch {
-      return i18n.language === 'ar' ? 'مارس ٢٠٢٦' : 'March 2026';
+    if (!dateStr) return t('blog.date_unavailable', { defaultValue: 'Date unavailable' });
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) {
+      return t('blog.date_unavailable', { defaultValue: 'Date unavailable' });
     }
+    return date.toLocaleDateString(i18n.language === 'ar' ? 'ar-SA' : 'en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric'
+    });
   };
 
-  const latestPosts = [...posts]
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-    .slice(0, 3);
+  const latestPosts = type === 'trending'
+    ? posts.slice(0, 3)
+    : [...posts]
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, 3);
 
   if (error) {
     return (
@@ -378,8 +423,9 @@ export function BlogGridPage({ type, id, onBack, onPostClick }: BlogGridPageProp
               ))}
             </div>
           ) : posts.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-12">
-              {posts.map((post) => (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-12">
+                {posts.map((post) => (
                 <motion.div
                   key={post.id}
                   initial={{ opacity: 0, y: 20 }}
@@ -418,8 +464,21 @@ export function BlogGridPage({ type, id, onBack, onPostClick }: BlogGridPageProp
                     </div>
                   </div>
                 </motion.div>
-              ))}
-            </div>
+                ))}
+              </div>
+              {hasMore && (
+              <div className="flex justify-center pt-4">
+                <button
+                  type="button"
+                  onClick={loadMore}
+                  disabled={loading}
+                  className="px-8 py-3 bg-zinc-950 border border-white/10 hover:border-gold-pure disabled:opacity-50 disabled:cursor-not-allowed text-gold-pure hover:text-white rounded-xs text-[10px] font-mono uppercase tracking-widest transition-all cursor-pointer"
+                >
+                  {loading ? t('blog.loading', { defaultValue: 'Loading…' }) : t('blog.load_more', { defaultValue: 'Load more' })}
+                </button>
+                </div>
+              )}
+            </>
           ) : (
             <div className="text-center py-32 space-y-4 bg-zinc-950/30 rounded-sm border border-dashed border-white/10">
               <Grid className="w-12 h-12 text-zinc-800 mx-auto" />

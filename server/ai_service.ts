@@ -1,13 +1,19 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || '',
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
+let _aiClient: GoogleGenAI | null = null;
+function getAiClient(): GoogleGenAI {
+  if (!_aiClient) {
+    _aiClient = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY || '',
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
   }
-});
+  return _aiClient;
+}
 
 export async function generateExecutiveBriefing(stats: any): Promise<string> {
   return `Executive Summary:\n- Total Orders: ${stats.totalOrders || 0}\n- Total Revenue: SAR ${stats.totalRevenue || 0}\n- Active Patrons: ${stats.activeCustomers || 0}\n\nStrategic Outlook:\nBusiness performance remains strong across coffee and bespoke luxury retail segments with steady organic expansion.`;
@@ -31,7 +37,7 @@ CRITICAL RULES:
   const prompt = `Generate an enterprise executive briefing based on the following verified business context:
 ${JSON.stringify(context, null, 2)}`;
 
-  const response = await ai.models.generateContent({
+  const response = await getAiClient().models.generateContent({
     model: "gemini-3.8-flash",
     contents: prompt,
     config: {

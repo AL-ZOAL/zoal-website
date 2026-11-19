@@ -52,6 +52,17 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     const { id } = params;
     const body = await req.json();
 
+    const { data: existingProduct, error: existingProductError } = await supabase
+      .from('zoal_products')
+      .select('category, product_type')
+      .eq('id', id)
+      .single();
+    if (existingProductError || !existingProduct) return apiError('Product not found', 404);
+
+    const effectiveCategory = body.category ?? existingProduct.category;
+    const effectiveProductType = body.productType ?? body.product_type ?? existingProduct.product_type;
+    const isLocalFood = effectiveCategory === 'bakery' || ['Food', 'Drink'].includes(effectiveProductType);
+
     const updatePayload: Record<string, any> = {};
 
     if (body.name !== undefined) {
@@ -213,7 +224,19 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
       updatePayload.ai_metadata = body.aiMetadata || body.ai_metadata;
     }
     if (body.deliveryType !== undefined || body.delivery_type !== undefined) {
-      updatePayload.delivery_type = body.deliveryType || body.delivery_type;
+      updatePayload.delivery_type = isLocalFood ? 'LOCAL_ONLY' : (body.deliveryType || body.delivery_type);
+    }
+    if (body.shipping_scope !== undefined) updatePayload.shipping_scope = body.shipping_scope;
+    if (body.delivery_zones !== undefined) updatePayload.delivery_zones = body.delivery_zones;
+    if (body.sameDay !== undefined) updatePayload.same_day = !!body.sameDay;
+    if (body.pickup_location !== undefined) updatePayload.pickup_location = body.pickup_location;
+    if (body.temperature_control !== undefined) updatePayload.temperature_control = !!body.temperature_control;
+    if (isLocalFood) {
+      updatePayload.delivery_type = 'LOCAL_ONLY';
+      if (body.shipping_scope === undefined) updatePayload.shipping_scope = ['Local Delivery', 'Pickup'];
+      if (body.delivery_zones === undefined) updatePayload.delivery_zones = ['Al Hofuf', 'Nearby Al Hofuf'];
+      if (body.sameDay === undefined) updatePayload.same_day = true;
+      if (body.deliveryDays === undefined && body.delivery_days === undefined) updatePayload.delivery_days = 1;
     }
     if (body.shippingFee !== undefined || body.shipping_fee !== undefined) {
       updatePayload.shipping_fee = parseFloat(body.shippingFee || body.shipping_fee);

@@ -284,9 +284,7 @@ export default function AuthPage({
         const token = data.session?.access_token || '';
         localStorage.setItem('zoal_auth_token', token);
 
-        setTimeout(() => {
-          onSuccess(data.user, token);
-        }, 1500);
+        onSuccess(data.user, token);
       }
 
     } catch (err: any) {
@@ -391,9 +389,7 @@ export default function AuthPage({
           sessionStorage.setItem('zoal_auth_token', token);
         }
 
-        setTimeout(() => {
-          onSuccess(data.user, token);
-        }, 1000);
+        onSuccess(data.user, token);
       }
     } catch (err: any) {
       setError(err.message || 'Authentication failed.');

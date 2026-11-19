@@ -7,6 +7,7 @@ import { SEED_MOCK_ORDERS } from './data';
 import { BlogPost } from './types/blog';
 import { useTranslation } from 'react-i18next';
 import PremiumBrandedLoader from './components/common/PremiumBrandedLoader';
+import MapPickerPage from './components/MapPickerPage';
 
 // Static / High Priority Core Viewport Imports (for zero-shift, immediate initial paint)
 import Navbar from './components/Navbar';
@@ -22,6 +23,7 @@ import SEO from './components/SEO';
 import { useNotificationEngine } from './lib/notificationStore';
 import EnterpriseNotificationToast from './components/EnterpriseNotificationToast';
 import { filterNotificationsByRole } from './rbac/notificationRbac';
+import AdminDashboardErrorBoundary from './components/common/AdminDashboardErrorBoundary';
 
 // Dynamic / Low Priority Viewport Imports (Code Splitting & Bundle Size Optimization with Robust Retry Logic)
 const lazyWithRetry = (importFn: () => Promise<any>) => {
@@ -29,19 +31,41 @@ const lazyWithRetry = (importFn: () => Promise<any>) => {
     return new Promise<any>((resolve) => {
       let retriesLeft = 5;
       let interval = 1000;
+      const recoveryKey = typeof window !== 'undefined'
+        ? `zoal_chunk_recovery:${window.location.pathname}`
+        : '';
 
       function attempt() {
         importFn()
-          .then(resolve)
+          .then((module) => {
+            if (recoveryKey) {
+              try { sessionStorage.removeItem(recoveryKey); } catch (_) {}
+            }
+            resolve(module);
+          })
           .catch((error) => {
             if (retriesLeft <= 0) {
               console.error("Critical: Failed to fetch dynamically imported module after retries.", error);
+
+              // A stale Vite chunk is a common cause after deployment. Recover once by
+              // reloading the current document so the browser gets the latest manifest.
+              if (recoveryKey && typeof window !== 'undefined') {
+                try {
+                  if (!sessionStorage.getItem(recoveryKey)) {
+                    sessionStorage.setItem(recoveryKey, '1');
+                    window.location.reload();
+                    return;
+                  }
+                  sessionStorage.removeItem(recoveryKey);
+                } catch (_) {}
+              }
+
               resolve({
                 default: () => (
                   <div className="flex flex-col items-center justify-center min-h-[50vh] py-20 text-center space-y-4">
-                    <p className="text-zinc-400 text-sm">Unable to load section. Please refresh the page.</p>
+                    <p className="text-zinc-400 text-sm">Unable to load section.</p>
                     <button onClick={() => window.location.reload()} className="bg-gold-pure text-black px-4 py-2 rounded-xs text-xs font-bold uppercase tracking-widest hover:bg-gold-light">
-                      Refresh
+                      Reload
                     </button>
                   </div>
                 )
@@ -90,7 +114,6 @@ const DataDeletion = lazyWithRetry(() => import('./components/DataDeletion'));
 const NotFound = lazyWithRetry(() => import('./components/NotFound'));
 const TrackOrder = lazyWithRetry(() => import('./components/TrackOrder'));
 const PaymentSimulation = lazyWithRetry(() => import('./components/PaymentSimulation'));
-const MapPickerPage = lazyWithRetry(() => import('./components/MapPickerPage'));
 
 // Premium, On-Brand Suspense Loader
 const PremiumLoader = ({ message, fullScreen, inline }: { message?: string; fullScreen?: boolean; inline?: boolean }) => (
@@ -292,6 +315,7 @@ function AppContent() {
   const [authModalView, setAuthModalView] = useState<'login' | 'register'>('login');
   const [dashboardSubTab, setDashboardSubTab] = useState<string>('overview');
   const [adminSubTab, setAdminSubTab] = useState<string>('dashboard');
+  const [adminBoundaryKey, setAdminBoundaryKey] = useState(0);
 
   // Synchronize authenticated wishlist from the server of record.
   useEffect(() => {
@@ -371,7 +395,7 @@ function AppContent() {
     const userRole = ((currentUser as any)?.role || 'customer').toLowerCase();
     
     if (['admin', 'manager', 'owner'].includes(userRole)) {
-      setCurrentPage('admin');
+      navigateTo('admin');
       if (targetModule === 'orders') setAdminSubTab('orders');
       else if (targetModule === 'inventory') setAdminSubTab('inventory');
       else if (targetModule === 'crm' || targetModule === 'customers') setAdminSubTab('crm');
@@ -379,7 +403,7 @@ function AppContent() {
       else if (targetModule === 'ai_center' || targetModule === 'ai' || targetModule === 'marketing') setAdminSubTab('ai_center');
       else setAdminSubTab(targetModule);
     } else {
-      setCurrentPage('dashboard');
+      navigateTo('dashboard');
       if (targetModule === 'orders') setDashboardSubTab('orders');
       else if (targetModule === 'track') setDashboardSubTab('track');
       else if (targetModule === 'support' || targetModule === 'tickets') setDashboardSubTab('support');
@@ -500,20 +524,17 @@ function AppContent() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('payment_id') && params.get('order_id')) {
-      setCurrentPage('payment-simulate');
+      navigateTo('payment-simulate');
     }
   }, []);
 
-  // Cleanup empty trailing hash after successful authentication (e.g. from OAuth redirects/callbacks)
+  // Keep empty hash fragments out of the URL after any client-side navigation.
   useEffect(() => {
-    if (window.location.hash === '' && window.location.href.endsWith('#')) {
-      window.history.replaceState(
-        null,
-        document.title,
-        window.location.pathname + window.location.search
-      );
+    if (typeof window === 'undefined') return;
+    if (window.location.hash === '#') {
+      window.history.replaceState(null, document.title, window.location.pathname + window.location.search);
     }
-  }, []);
+  }, [currentPage]);
 
   // Track visited/loaded pages to prevent redundant prefetching
   const loadedPagesRef = useRef<Set<string>>(new Set<string>());
@@ -546,18 +567,13 @@ function AppContent() {
 
     if (!shouldPrefetch()) return;
 
-    // High-priority targets, prefetched in order of priority:
-    // 1. Store, 2. Cart, 3. ProductDetail, 4. WishlistPage, 5. About, 6. Contact, 7. Branches, 8. FAQ, 9. Portfolio, 10. AuthPage
+    // Keep idle prefetch intentionally narrow: only the most common public routes.
+    // Avoid downloading a large chain of chunks after initial paint; route navigation itself
+    // uses lazyWithRetry() and remains the authoritative loading path.
     const targets = [
       { key: 'store', importFn: () => import('./components/Store') },
       { key: 'cart', importFn: () => import('./components/Cart') },
       { key: 'product', importFn: () => import('./components/ProductDetail') },
-      { key: 'wishlist', importFn: () => import('./components/WishlistPage') },
-      { key: 'about', importFn: () => import('./components/About') },
-      { key: 'contact', importFn: () => import('./components/Contact') },
-      { key: 'branches', importFn: () => import('./components/Branches') },
-      { key: 'faq', importFn: () => import('./components/FAQ') },
-      { key: 'portfolio', importFn: () => import('./components/Portfolio') },
       { key: 'auth', importFn: () => import('./components/AuthPage') },
     ];
 
@@ -605,11 +621,28 @@ function AppContent() {
     }
   }, []);
 
-  const handleSetCurrentPage = useCallback((page: string) => {
-    setCurrentPage(page);
+  const navigateTo = useCallback((page: string, options: { replace?: boolean } = {}) => {
     setSelectedProduct(null);
     setSelectedPost(null);
+    const nextPath = getPathFromPage(page);
+
+    if (typeof window !== 'undefined') {
+      const nextUrl = nextPath + (page === 'payment-simulate' ? window.location.search : '');
+      const currentUrl = window.location.pathname + window.location.search;
+      if (currentUrl !== nextUrl) {
+        if (options.replace) window.history.replaceState(null, '', nextUrl);
+        else window.history.pushState(null, '', nextUrl);
+      }
+      if (window.location.hash === '#') {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    setCurrentPage(page);
   }, []);
+
+  const handleSetCurrentPage = navigateTo;
 
   const handleLogout = useCallback(() => {
     setLogoutModalStatus('confirm');
@@ -756,20 +789,26 @@ function AppContent() {
 
   const handleLogoutSuccessRedirect = () => {
     setLogoutModalOpen(false);
-    setCurrentPage('home');
+    navigateTo('home');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // DEFAULT DELIVERY ZONES SEATED SCHEMAS
   const [deliveryZones, setDeliveryZones] = useState<any[]>(() => {
     const saved = localStorage.getItem('zoal_delivery_zones');
-    return saved ? JSON.parse(saved) : [
+    const defaults = [
       { id: '1', city: 'Hofuf', fee: 0, method: 'Local Delivery', region: 'Al Hofuf & Nearby Areas' },
-      { id: '2', city: 'Branch B', fee: 25, method: 'Regional Delivery', region: 'Eastern Province' },
       { id: '3', city: 'Khobar', fee: 25, method: 'Regional Delivery', region: 'Eastern Province' },
-      { id: '4', city: 'Branch A', fee: 45, method: 'Regional Delivery', region: 'Central Region' },
       { id: '5', city: 'Jeddah', fee: 50, method: 'Regional Delivery', region: 'Western Region' },
     ];
+    if (!saved) return defaults;
+    try {
+      const parsed = JSON.parse(saved);
+      // Legacy placeholder branch records are not real operating locations.
+      return Array.isArray(parsed) ? parsed.filter((zone: any) => !/^branch\\s+[ab]$/i.test(String(zone?.city || '').trim())) : defaults;
+    } catch {
+      return defaults;
+    }
   });
 
   useEffect(() => {
@@ -860,18 +899,10 @@ function AppContent() {
   };
 
   useEffect(() => {
-    if (!routeInitializedRef.current) return;
-    const currentPath = getPathFromPage(currentPage);
-    if (window.location.pathname !== currentPath) {
-      window.history.pushState(null, '', currentPath);
-    }
-  }, [currentPage]);
-
-  useEffect(() => {
     const handlePathChange = () => {
       const page = getPageFromPath(window.location.pathname);
       routeInitializedRef.current = true;
-      setCurrentPage(page);
+      navigateTo(page);
     };
 
     window.addEventListener('popstate', handlePathChange);
@@ -888,7 +919,7 @@ function AppContent() {
     const handleRouteChange = (e: Event) => {
       const customEvent = e as CustomEvent<string>;
       if (customEvent.detail) {
-        setCurrentPage(customEvent.detail);
+        navigateTo(customEvent.detail);
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
     };
@@ -900,7 +931,7 @@ function AppContent() {
   useEffect(() => {
     if (!isAuthLoading) {
       if (currentPage === 'dashboard' && !currentUser) {
-        setCurrentPage('home');
+        navigateTo('home');
         setAuthModalOpen(true);
         dispatchNotification({
           type: 'system',
@@ -912,7 +943,7 @@ function AppContent() {
         const role = currentUser?.role?.toLowerCase();
         const isAdmin = role && ['owner', 'admin', 'manager'].includes(role);
         if (!isAdmin) {
-          setCurrentPage('home');
+          navigateTo('home');
           if (!currentUser) {
             setAuthModalOpen(true);
             dispatchNotification({
@@ -1159,7 +1190,7 @@ function AppContent() {
       // Set success modal states
       setActiveSuccessOrder(newOrder);
       setCheckoutSuccessModalOpen(true);
-      setCurrentPage('dashboard'); // Transition to dashboard behind the scenes so closing the modal reveals it
+      navigateTo('dashboard'); // Transition to dashboard behind the scenes so closing the modal reveals it
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
       // Trigger System Notifications
@@ -1228,12 +1259,12 @@ function AppContent() {
   };
 
   const handleContinueShopping = () => {
-    setCurrentPage('store');
+    navigateTo('store');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleViewOrders = () => {
-    setCurrentPage('dashboard');
+    navigateTo('dashboard');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -1339,7 +1370,7 @@ function AppContent() {
                 setCurrentPage={setCurrentPage}
                 setSelectedCategoryFilter={(cat) => {
                   setSelectedCategoryFilter(cat);
-                  setCurrentPage('store');
+                  navigateTo('store');
                 }}
               />
 
@@ -1364,7 +1395,7 @@ function AppContent() {
                       <p className="text-zinc-500 text-xs tracking-widest uppercase">{t('home.featured.subtitle')}</p>
                       <button 
                         onClick={() => {
-                          setCurrentPage('store');
+                          navigateTo('store');
                           window.scrollTo({ top: 0, behavior: 'smooth' });
                         }}
                         className="absolute right-0 text-[#D4AF37] hover:text-white transition-colors duration-300 text-xs tracking-widest uppercase font-semibold hidden sm:block rtl:right-auto rtl:left-0"
@@ -1383,7 +1414,7 @@ function AppContent() {
                     </span>
                     <button 
                       onClick={() => {
-                        setCurrentPage('store');
+                        navigateTo('store');
                         window.scrollTo({ top: 0, behavior: 'smooth' });
                       }}
                       className="text-[#D4AF37] hover:text-white transition-colors duration-300 text-[10px] tracking-widest uppercase font-semibold inline-flex items-center gap-1"
@@ -1696,14 +1727,14 @@ function AppContent() {
                     try {
                       const prod = JSON.parse(productStr);
                       setSelectedProduct(prod);
-                      setCurrentPage('store');
+                      navigateTo('store');
                       window.scrollTo({ top: 0, behavior: 'smooth' });
                       return;
                     } catch (e) {
                       console.error("Error restoring checkout product:", e);
                     }
                   }
-                  setCurrentPage('cart');
+                  navigateTo('cart');
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }}
                 deliveryZones={deliveryZones}
@@ -1754,7 +1785,7 @@ function AppContent() {
                 }}
                 onCancel={() => {
                   window.history.replaceState(null, document.title, window.location.pathname);
-                  setCurrentPage('checkout');
+                  navigateTo('checkout');
                 }}
               />
             </div>
@@ -1809,17 +1840,22 @@ function AppContent() {
 
           {currentPage === 'admin' && (
             <div className="overflow-x-hidden max-w-full min-w-0">
-              <AdminDashboard
-                currentUser={currentUser}
-                orders={orders}
-                setOrders={setOrders}
-                onUpdateOrderStatus={handleUpdateOrderStatus}
-                onLogout={handleLogout}
-                setCurrentPage={setCurrentPage}
-                initialTab={adminSubTab}
-                notificationEngine={notificationEngine}
-                onOpenNotifications={handleOpenNotifications}
-              />
+              <AdminDashboardErrorBoundary
+                key={adminBoundaryKey}
+                onRetry={() => setAdminBoundaryKey((value) => value + 1)}
+              >
+                <AdminDashboard
+                  currentUser={currentUser}
+                  orders={orders}
+                  setOrders={setOrders}
+                  onUpdateOrderStatus={handleUpdateOrderStatus}
+                  onLogout={handleLogout}
+                  setCurrentPage={setCurrentPage}
+                  initialTab={adminSubTab}
+                  notificationEngine={notificationEngine}
+                  onOpenNotifications={handleOpenNotifications}
+                />
+              </AdminDashboardErrorBoundary>
             </div>
           )}
 
@@ -1846,9 +1882,9 @@ function AppContent() {
                           setCurrentUser(data.user);
                           setDashboardSubTab('overview');
                           if (['owner', 'admin', 'manager'].includes(data.user.role)) {
-                            setCurrentPage('admin');
+                            navigateTo('admin');
                           } else {
-                            setCurrentPage('dashboard');
+                            navigateTo('dashboard');
                           }
                           return;
                         }
@@ -1861,15 +1897,15 @@ function AppContent() {
                   // Fallback
                   setCurrentUser(user);
                   setDashboardSubTab('overview');
-                  setCurrentPage('dashboard');
+                  navigateTo('dashboard');
                 }}
                 onCancel={() => setCurrentPage('home')}
                 setCurrentPage={setCurrentPage}
                 onViewChange={(view) => {
                   if (view === 'register') {
-                    setCurrentPage('register');
+                    navigateTo('register');
                   } else if (view === 'login') {
-                    setCurrentPage('login');
+                    navigateTo('login');
                   }
                 }}
               />
@@ -1882,7 +1918,7 @@ function AppContent() {
 
       {/* BOUTIQUE FOOTER SECTOR */}
       {currentPage !== 'admin' && (
-        <Footer setCurrentPage={setCurrentPage} setSelectedCategoryFilter={setSelectedCategoryFilter} />
+        <Footer setCurrentPage={navigateTo} setSelectedCategoryFilter={setSelectedCategoryFilter} />
       )}
 
       {/* PRIVILEGED LOGIN MODAL */}
@@ -1927,9 +1963,9 @@ function AppContent() {
                           setAuthModalOpen(false);
                           setDashboardSubTab('overview');
                           if (['owner', 'admin', 'manager'].includes(data.user.role)) {
-                            setCurrentPage('admin');
+                            navigateTo('admin');
                           } else {
-                            setCurrentPage('dashboard');
+                            navigateTo('dashboard');
                           }
                           return;
                         }
@@ -1943,7 +1979,7 @@ function AppContent() {
                   setCurrentUser(user);
                   setAuthModalOpen(false);
                   setDashboardSubTab('overview');
-                  setCurrentPage('dashboard');
+                  navigateTo('dashboard');
                 }}
                 onCancel={() => setAuthModalOpen(false)}
                 setCurrentPage={setCurrentPage}

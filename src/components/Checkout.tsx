@@ -5,8 +5,8 @@ import {
   Map, Check, Clock, Home, Briefcase, Star, RefreshCw, ZoomIn, ZoomOut, AlertTriangle, Eye, EyeOff,
   Plus, Maximize2, Minimize2, ExternalLink, Store, X
 } from 'lucide-react';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
+import mapboxgl from 'mapbox-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
 import { CartItem, Order, Product } from '../types';
 import { useTranslation } from 'react-i18next';
 import { formatCurrency } from '../utils';
@@ -29,10 +29,9 @@ interface CheckoutProps {
 }
 
 const DEFAULT_ZONES = [
+  // Current operating location: Al Hofuf. Other cities remain delivery zones, not branches.
   { id: '1', city: 'Hofuf', fee: 0, method: 'Local Delivery', region: 'Al Hofuf & Nearby Areas' },
-  { id: '2', city: 'Branch B', fee: 25, method: 'Regional Delivery', region: 'Eastern Province' },
   { id: '3', city: 'Khobar', fee: 25, method: 'Regional Delivery', region: 'Eastern Province' },
-  { id: '4', city: 'Branch A', fee: 45, method: 'Regional Delivery', region: 'Central Region' },
   { id: '5', city: 'Jeddah', fee: 50, method: 'Regional Delivery', region: 'Western Region' },
 ];
 
@@ -71,6 +70,7 @@ export default function Checkout({
   const [email, setEmail] = useState(''); // Optional now
   const [phone, setPhone] = useState('');
   const [city, setCity] = useState('');
+  const [region, setRegion] = useState('');
   const [address, setAddress] = useState('');
 
   // Real-time validation state
@@ -172,8 +172,8 @@ export default function Checkout({
   const [showCardCvv, setShowCardCvv] = useState(false);
 
   // Location selector coordinate state
-  const [lat, setLat] = useState(24.7136); // Default to Branch A center for map view but unselected
-  const [lng, setLng] = useState(46.6753); 
+  const [lat, setLat] = useState(25.3830); // Default map center: Al Ahsa / Al Hofuf area
+  const [lng, setLng] = useState(49.5880); 
   const [pinX, setPinX] = useState(70);    // relative projection X %
   const [pinY, setPinY] = useState(25);    // relative projection Y %
   const [googleMapsLink, setGoogleMapsLink] = useState(`https://www.google.com/maps/search/?api=1&query=26.4312,50.1108`);
@@ -187,6 +187,7 @@ export default function Checkout({
   const [accuracy, setAccuracy] = useState('3m');
   const [hasSelectedDeliveryLocation, setHasSelectedDeliveryLocation] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
+  const [deliveryRouteInfo, setDeliveryRouteInfo] = useState<{ distanceKm: number; durationMin: number } | null>(null);
 
   // Dynamic Saved Addresses State
   const [savedAddresses, setSavedAddresses] = useState(INITIAL_SAVED_ADDRESSES);
@@ -195,6 +196,12 @@ export default function Checkout({
   const [isLoadingAddresses, setIsLoadingAddresses] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
+
+  // Authoritative server totals. The checkout UI must never invent tax or shipping
+  // values when the server has not resolved them yet.
+  const [authoritativeTaxRate, setAuthoritativeTaxRate] = useState<number | null>(null);
+  const [authoritativeTaxAmount, setAuthoritativeTaxAmount] = useState<number | null>(null);
+  const [authoritativeTotal, setAuthoritativeTotal] = useState<number | null>(null);
 
   const activeMapRequestIdRef = useRef<string | null>(null);
 
@@ -250,7 +257,13 @@ export default function Checkout({
       setNominatimAddress(null);
       setHasSelectedDeliveryLocation(true);
       setGoogleMapsLink(`https://www.google.com/maps/search/?api=1&query=${newLat},${newLng}`);
-      setAccuracy('1.5m');
+      setAccuracy('Map selected');
+      if (data.route && Number.isFinite(Number(data.route.distanceKm)) && Number.isFinite(Number(data.route.durationMin))) {
+        setDeliveryRouteInfo({ distanceKm: Number(data.route.distanceKm), durationMin: Number(data.route.durationMin) });
+      } else {
+        setDeliveryRouteInfo(null);
+      }
+      setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     };
 
     if (channel) {
@@ -359,10 +372,10 @@ export default function Checkout({
     fetchUserAddresses();
   }, [currentUser, i18n.language]);
 
-  // Leaflet Map Refs and Expanded State
+  // Mapbox Map Refs and Expanded State
   const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapInstanceRef = useRef<L.Map | null>(null);
-  const markerInstanceRef = useRef<L.Marker | null>(null);
+  const mapInstanceRef = useRef<mapboxgl.Map | null>(null);
+  const markerInstanceRef = useRef<mapboxgl.Marker | null>(null);
   const [isMapExpanded, setIsMapExpanded] = useState(false);
 
   // Live Nominatim Reverse Geocoding States
@@ -410,10 +423,30 @@ export default function Checkout({
     return country.includes('saudi') || country.includes('سعودي') || country.includes('المملكة');
   }, [activeAddress.country]);
 
+  // ZOAL local-food coverage: Al Hofuf and nearby Al Hofuf only.
+  // Keep this city-level check conservative; broader Al Ahsa is not treated as 1–2 hour local coverage.
   const isLocalZone = useMemo(() => {
-    const cityLower = (activeAddress.city || '').toLowerCase();
-    return cityLower.includes('hofuf') || (activeAddress.city || '').includes('هفوف');
-  }, [activeAddress.city]);
+    const city = String(activeAddress.city || '').trim().toLowerCase();
+    const district = String(activeAddress.district || '').trim().toLowerCase();
+    const region = String(activeAddress.region || '').trim().toLowerCase();
+    const haystack = [city, district, region].join(' ');
+
+    const isHofuf =
+      haystack.includes('hofuf') ||
+      haystack.includes('al hofuf') ||
+      haystack.includes('al-hofuf') ||
+      haystack.includes('هفوف');
+
+    // Nearby areas can be returned by Nominatim as districts/suburbs rather than "Hofuf".
+    // Explicitly support common local-area markers while avoiding a blanket Al Ahsa match.
+    const isNearbyHofuf =
+      haystack.includes('nearby al hofuf') ||
+      haystack.includes('hofuf nearby') ||
+      haystack.includes('الهفوف') ||
+      haystack.includes('المبرز');
+
+    return isHofuf || isNearbyHofuf;
+  }, [activeAddress.city, activeAddress.district, activeAddress.region]);
 
   const hasLocalOnlyItems = useMemo(() => {
     return cart.some(item => item.product.deliveryType === 'LOCAL_ONLY');
@@ -497,7 +530,9 @@ export default function Checkout({
           if (isSaudi) {
             const cityLower = cityVal.toLowerCase();
             if (cityLower.includes('dammam') || cityVal.includes('دمام') || cityLower.includes('khobar') || cityVal.includes('خبر') || cityLower.includes('hofuf') || cityVal.includes('هفوف')) {
-              etaVal = i18n.language === 'ar' ? 'اليوم • ٢-٤ ساعات' : 'Today • 2–4 Hours';
+              etaVal = (cityLower.includes('hofuf') || cityVal.includes('هفوف'))
+  ? (i18n.language === 'ar' ? 'اليوم • ١-٢ ساعة' : 'Today • 1–2 Hours')
+  : (i18n.language === 'ar' ? 'اليوم • ٢-٣ ساعات' : 'Today • 2–3 Hours');
               originalCity = cityLower.includes('hofuf') ? 'Hofuf' : (cityLower.includes('khobar') ? 'Khobar' : 'Branch B');
             } else if (cityLower.includes('riyadh') || cityVal.includes('رياض')) {
               etaVal = i18n.language === 'ar' ? 'غداً • خلال ٢٤ ساعة' : 'Next Day • 24 Hours';
@@ -556,24 +591,18 @@ export default function Checkout({
   useEffect(() => {
     if (!hasSelectedDeliveryLocation) return;
     
-    const cName = (activeAddress.city || '').toLowerCase();
-    let originalCity = 'Empty Quarter';
-    if (activeAddress.available) {
-      if (cName.includes('dammam') || cName.includes('دمام')) originalCity = 'Branch B';
-      else if (cName.includes('khobar') || cName.includes('خبر')) originalCity = 'Khobar';
-      else if (cName.includes('hofuf') || cName.includes('هفوف')) originalCity = 'Hofuf';
-      else if (cName.includes('riyadh') || cName.includes('رياض')) originalCity = 'Branch A';
-      else if (cName.includes('jeddah') || cName.includes('جدة')) originalCity = 'Jeddah';
-      else originalCity = 'Branch B';
-    }
-    setCity(originalCity);
+    const detectedCity = String(activeAddress.city || '').trim();
+    const detectedRegion = String(activeAddress.region || '').trim();
 
+    // Map/reverse-geocoding is the source of truth for the displayed location.
+    if (detectedCity) setCity(detectedCity);
+    if (detectedRegion) setRegion(detectedRegion);
+
+    // Saudi Arabia is fixed operationally, so it is not shown in the address field.
     const parts = [
       activeAddress.street,
       activeAddress.district,
-      activeAddress.city,
-      activeAddress.region,
-      activeAddress.country
+      detectedCity
     ].filter(Boolean);
 
     if (parts.length > 0) {
@@ -587,119 +616,106 @@ export default function Checkout({
     setLastUpdated(`${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`);
   }, [activeAddress]);
 
-  // Initialize and mount Leaflet map when location is selected
+  // Initialize and mount Mapbox map when location is selected
   useEffect(() => {
     if (!hasSelectedDeliveryLocation || !mapContainerRef.current) return;
+
+    const token = (import.meta.env.VITE_MAPBOX_PUBLIC_TOKEN || '').trim();
+    if (!token.startsWith('pk.')) {
+      console.error('Mapbox is not configured: VITE_MAPBOX_PUBLIC_TOKEN is missing or invalid.');
+      return;
+    }
 
     if (mapInstanceRef.current) {
       mapInstanceRef.current.remove();
       mapInstanceRef.current = null;
+      markerInstanceRef.current = null;
     }
 
-    const map = L.map(mapContainerRef.current, {
-      center: [lat, lng],
-      zoom: zoom,
-      zoomControl: false,
-      attributionControl: false
+    mapboxgl.accessToken = token;
+
+    const map = new mapboxgl.Map({
+      container: mapContainerRef.current,
+      style: 'mapbox://styles/mapbox/streets-v12',
+      center: [lng, lat],
+      zoom: Math.min(20, Math.max(4, zoom)),
+      attributionControl: true,
+      dragRotate: false,
+      pitchWithRotate: false,
+      failIfMajorPerformanceCaveat: false
     });
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      maxZoom: 20,
-      subdomains: 'abcd',
-    }).addTo(map);
+    const markerElement = document.createElement('div');
+    markerElement.className = 'custom-map-checkout-pin';
+    markerElement.innerHTML = `<div class="relative flex items-center justify-center"><div class="absolute w-10 h-10 rounded-full bg-[#D4AF37]/30 animate-ping"></div><div class="w-8 h-8 rounded-full bg-black border-2 border-[#D4AF37] shadow-[0_0_20px_rgba(212,175,55,0.6)] flex items-center justify-center"><div class="w-3 h-3 rounded-full bg-[#D4AF37]"></div></div></div>`;
 
-    const goldIcon = L.divIcon({
-      html: `
-        <div class="relative flex items-center justify-center">
-          <div class="absolute w-8 h-8 rounded-full bg-[#D4AF37]/25 animate-ping"></div>
-          <svg viewBox="0 0 24 24" class="w-8 h-8 text-[#D4AF37] filter drop-shadow-[0_2px_10px_rgba(212,175,55,0.55)]" fill="currentColor">
-            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
-          </svg>
-        </div>
-      `,
-      className: '',
-      iconSize: [32, 32],
-      iconAnchor: [16, 32]
+    const marker = new mapboxgl.Marker({ element: markerElement, draggable: true })
+      .setLngLat([lng, lat])
+      .addTo(map);
+
+    const updateSelectedLocation = (newLat: number, newLng: number) => {
+      setIsGeocoding(true);
+      setNominatimAddress(null);
+      setHasSelectedDeliveryLocation(true);
+      setLat(newLat);
+      setLng(newLng);
+      setSelectedAddressId('');
+      setAccuracy('Map selected');
+      setGoogleMapsLink(`https://www.google.com/maps/search/?api=1&query=${newLat},${newLng}`);
+      setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    };
+
+    map.on('click', (e) => {
+      updateSelectedLocation(e.lngLat.lat, e.lngLat.lng);
+      marker.setLngLat([e.lngLat.lng, e.lngLat.lat]);
     });
-
-    const marker = L.marker([lat, lng], {
-      icon: goldIcon,
-      draggable: true
-    }).addTo(map);
 
     marker.on('dragend', () => {
-      const pos = marker.getLatLng();
-      setIsGeocoding(true);
-      setNominatimAddress(null);
-      setHasSelectedDeliveryLocation(true);
-      setLat(pos.lat);
-      setLng(pos.lng);
-      setSelectedAddressId('');
-      setAccuracy(`${(1.5 + Math.random() * 2).toFixed(1)}m`);
+      const position = marker.getLngLat();
+      updateSelectedLocation(position.lat, position.lng);
     });
 
-    map.on('click', (e: L.LeafletMouseEvent) => {
-      const { lat, lng } = e.latlng;
-      setIsGeocoding(true);
-      setNominatimAddress(null);
-      setHasSelectedDeliveryLocation(true);
-      setLat(lat);
-      setLng(lng);
-      setSelectedAddressId('');
-      setAccuracy(`${(1.5 + Math.random() * 2).toFixed(1)}m`);
+    map.on('zoomend', () => setZoom(map.getZoom()));
+
+    map.once('load', () => {
+      window.requestAnimationFrame(() => map.resize());
+      window.setTimeout(() => map.resize(), 200);
     });
 
     mapInstanceRef.current = map;
     markerInstanceRef.current = marker;
 
-    const t1 = setTimeout(() => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.invalidateSize();
-      }
-    }, 100);
-
-    const t2 = setTimeout(() => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.invalidateSize();
-      }
-    }, 300);
-
     return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
+      if (mapInstanceRef.current === map) {
+        marker.remove();
+        map.remove();
         mapInstanceRef.current = null;
         markerInstanceRef.current = null;
       }
     };
   }, [hasSelectedDeliveryLocation]);
 
-  // Sync state coordinates to Leaflet
+  // Sync selected coordinates to Mapbox
   useEffect(() => {
     if (mapInstanceRef.current && markerInstanceRef.current) {
-      const curLatLng = markerInstanceRef.current.getLatLng();
-      if (curLatLng.lat !== lat || curLatLng.lng !== lng) {
-        markerInstanceRef.current.setLatLng([lat, lng]);
-        mapInstanceRef.current.panTo([lat, lng]);
-      }
+      markerInstanceRef.current.setLngLat([lng, lat]);
+      mapInstanceRef.current.panTo([lng, lat]);
     }
   }, [lat, lng]);
 
-  // Sync zoom level to Leaflet
+  // Sync zoom level to Mapbox
   useEffect(() => {
     if (mapInstanceRef.current) {
       mapInstanceRef.current.setZoom(zoom);
     }
   }, [zoom]);
 
-  // Invalidate map size on expanded state changes to properly align map tiles
+  // Resize Mapbox after layout/expanded state changes
   useEffect(() => {
-    setTimeout(() => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.invalidateSize();
-      }
+    const timer = window.setTimeout(() => {
+      mapInstanceRef.current?.resize();
     }, 200);
+    return () => window.clearTimeout(timer);
   }, [isMapExpanded]);
 
   // Action to add custom saved addresses dynamically
@@ -726,7 +742,7 @@ export default function Checkout({
       lng: lng,
       accuracy: '3m',
       eta: activeAddress.eta,
-      shippingFee: shippingFee,
+      shippingFee: shippingFee ?? 0,
       available: activeAddress.available
     };
 
@@ -753,9 +769,9 @@ export default function Checkout({
 
   const subtotalAfterDiscount = subtotal - discountAmount;
 
-  // Saudi Arabia VAT (15%)
-  const vatRate = 0.15;
-  const vatAmount = parseFloat((subtotalAfterDiscount * vatRate).toFixed(2));
+  // Tax is resolved from the active server-side tax configuration.
+  // Never hard-code the VAT percentage in the checkout UI.
+  const vatAmount = authoritativeTaxAmount ?? 0;
 
   // Dynamic Shipping rules resolution based on geocoded/selected city and district
   useEffect(() => {
@@ -819,10 +835,76 @@ export default function Checkout({
 
   const shippingFee = useMemo(() => {
     if (subtotal === 0) return 0;
-    return selectedShippingOption ? selectedShippingOption.fee : 25;
+    return selectedShippingOption ? Number(selectedShippingOption.fee) : null;
   }, [selectedShippingOption, subtotal]);
 
-  const finalTotal = parseFloat((subtotalAfterDiscount + vatAmount + shippingFee).toFixed(2));
+  const calculatedFallbackTotal = shippingFee === null
+    ? null
+    : parseFloat((subtotalAfterDiscount + vatAmount + shippingFee).toFixed(2));
+
+  const finalTotal = authoritativeTotal ?? calculatedFallbackTotal;
+
+  // Resolve tax + final total from the same server-side checkout calculator used
+  // for order validation. Guests remain allowed to proceed through the existing
+  // order flow, but the UI does not fabricate a tax rate for them.
+  useEffect(() => {
+    let cancelled = false;
+    const resolveAuthoritativeTotals = async () => {
+      setAuthoritativeTaxRate(null);
+      setAuthoritativeTaxAmount(null);
+      setAuthoritativeTotal(null);
+
+      if (!currentUser?.id || !selectedShippingOption?.id || subtotal <= 0) return;
+
+      try {
+        const token = localStorage.getItem('zoal_auth_token') || sessionStorage.getItem('zoal_auth_token') || '';
+        if (!token) return;
+
+        const response = await fetch('/api/checkout', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + token
+          },
+          body: JSON.stringify({
+            items: cart.map(item => ({
+              product_id: item.product.id,
+              quantity: item.quantity
+            })),
+            shippingMethodId: selectedShippingOption.id,
+            couponCode: couponCode || undefined
+          })
+        });
+
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data?.success) return;
+
+        const result = data.data ?? data;
+        if (cancelled) return;
+
+        setAuthoritativeTaxRate(
+          Number.isFinite(Number(result.tax?.ratePercentage))
+            ? Number(result.tax.ratePercentage)
+            : null
+        );
+        setAuthoritativeTaxAmount(
+          Number.isFinite(Number(result.taxAmount))
+            ? Number(result.taxAmount)
+            : null
+        );
+        setAuthoritativeTotal(
+          Number.isFinite(Number(result.totalAmount))
+            ? Number(result.totalAmount)
+            : null
+        );
+      } catch (error) {
+        console.warn('Authoritative checkout totals unavailable; server order validation remains authoritative.', error);
+      }
+    };
+
+    resolveAuthoritativeTotals();
+    return () => { cancelled = true; };
+  }, [currentUser?.id, selectedShippingOption?.id, couponCode, cart, subtotal]);
 
   // Handle GPS Current Location
   const handleUseCurrentLocation = () => {
@@ -849,7 +931,7 @@ export default function Checkout({
         setIsGeocoding(true);
         setNominatimAddress(null);
         setHasSelectedDeliveryLocation(true);
-        const accuracyVal = position.coords.accuracy ? `${position.coords.accuracy.toFixed(1)}m` : '1.8m';
+        const accuracyVal = Number.isFinite(position.coords.accuracy) && position.coords.accuracy > 0 ? `±${position.coords.accuracy.toFixed(1)}m` : 'GPS';
         setAccuracy(accuracyVal);
         setGoogleMapsLink(`https://www.google.com/maps/search/?api=1&query=${latVal},${lngVal}`);
         
@@ -857,6 +939,9 @@ export default function Checkout({
         const visualY = ((27.5 - latVal) / (27.5 - 24.0)) * 100;
         const visualX = ((lngVal - 46.0) / (50.5 - 46.0)) * 100;
         setPinY(Math.max(5, Math.min(95, visualY)));
+        setSelectedAddressId('');
+        setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+        requestAnimationFrame(() => requestAnimationFrame(() => scrollToMap()));
         setPinX(Math.max(5, Math.min(95, visualX)));
       },
       (error) => {
@@ -882,7 +967,7 @@ export default function Checkout({
         }
         alert(msg);
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
     );
   };
 
@@ -969,7 +1054,7 @@ export default function Checkout({
           customerName: name.trim(),
           customerEmail: email.trim() || settings.email,
           customerPhone: phone.trim(),
-          address: `${address.trim()}, ${city}, Saudi Arabia`,
+          address: `${address.trim()}${city ? `, ${city}` : ''}`,
           termsAccepted: true
         })
       })
@@ -1009,10 +1094,10 @@ export default function Checkout({
         selectedOption: item.selectedOption
       })),
       subtotal,
-      shipping: shippingFee,
+      shipping: shippingFee ?? 0,
       discount: discountAmount,
       tax: vatAmount,
-      total: finalTotal,
+      total: finalTotal ?? 0,
       status: 'Pending',
       customerName: name.trim(),
       email: email.trim() || settings.email, // Optional email handled safely
@@ -1025,7 +1110,7 @@ export default function Checkout({
       latitude: lat,
       longitude: lng,
       mapLocationLink: googleMapsLink,
-      region: city,
+      region: region || activeAddress.region || '',
       city: city || activeAddress.city,
       district: activeAddress.district || '',
       postalCode: '',
@@ -1196,57 +1281,40 @@ export default function Checkout({
                   )}
                 </div>
 
-                {/* 4. City / Region */}
+                {/* 4. City + Region / Province — populated from the selected map location */}
                 {!isDigitalOnlyOrder && (
-                  <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
                     <div className="space-y-0.5 sm:space-y-1">
                       <label htmlFor="checkout-city" className="text-[9px] sm:text-[10px] text-zinc-400 uppercase tracking-widest font-semibold block mb-0.5 sm:mb-1">
-                        {i18n.language === 'ar' ? 'المدينة / المنطقة' : 'City / Region'} <span className="text-gold-pure">*</span>
+                        {i18n.language === 'ar' ? 'المدينة' : 'City'} <span className="text-gold-pure">*</span>
                       </label>
-                      <select
+                      <input
                         id="checkout-city"
+                        type="text"
                         value={city}
-                        onChange={(e) => {
-                          const selectedCity = e.target.value;
-                          setCity(selectedCity);
-                          // Auto-center coordinates based on selected city
-                          const selCityLower = (selectedCity || '').toLowerCase();
-                          const zone = (deliveryZones || DEFAULT_ZONES).find(
-                            (z) => (z.city || '').toLowerCase() === selCityLower
-                          );
-                          if (zone) {
-                            let nLat = 26.4312;
-                            let nLng = 50.1108;
-                            if (selCityLower === 'hofuf') { nLat = 25.3783; nLng = 49.5866; }
-                            else if (selCityLower === 'khobar') { nLat = 26.2172; nLng = 50.1971; }
-                            else if (selCityLower === 'riyadh') { nLat = 24.7136; nLng = 46.6753; }
-                            else if (selCityLower === 'jeddah') { nLat = 21.4858; nLng = 39.1925; }
-                            setLat(nLat);
-                            setLng(nLng);
-                            setGoogleMapsLink(`https://www.google.com/maps/search/?api=1&query=${nLat},${nLng}`);
-                          }
-                        }}
-                        className="w-full bg-black border border-zinc-800 sm:border-white/5 rounded-sm h-9 sm:h-auto min-h-[36px] sm:min-h-[40px] px-2.5 sm:px-3 py-1.5 sm:py-2.5 text-xs sm:text-sm text-zinc-300 focus:outline-none focus:border-gold-pure/80 focus:ring-1 focus:ring-gold-pure/20 sm:focus:border-gold-pure/45 sm:focus:ring-0 transition-colors cursor-pointer max-w-full min-w-0"
-                      >
-                        {(deliveryZones || DEFAULT_ZONES).map((z) => {
-                          let cityName = z.city;
-                          let regionName = z.region || z.city;
-                          const zCityLower = (z.city || '').toLowerCase();
-                          if (i18n.language === 'ar') {
-                            if (zCityLower === 'hofuf') { cityName = 'الهفوف'; regionName = 'الهفوف والمناطق المجاورة'; }
-                            else if (zCityLower === 'branch b') { cityName = 'الدمام / الخبر (المنطقة الشرقية)'; regionName = 'المنطقة الشرقية'; }
-                            else if (zCityLower === 'khobar') { cityName = 'الخبر'; regionName = 'المنطقة الشرقية'; }
-                            else if (zCityLower === 'branch a') { cityName = 'الرياض'; regionName = 'المنطقة الوسطى'; }
-                            else if (zCityLower === 'jeddah') { cityName = 'جدة'; regionName = 'المنطقة الغربية'; }
-                          }
-                          return (
-                            <option key={z.id} value={z.city}>
-                              {cityName} ({regionName})
-                            </option>
-                          );
-                        })}
-                      </select>
+                        readOnly
+                        required
+                        placeholder={i18n.language === 'ar' ? 'حدد الموقع من الخريطة' : 'Select a location on the map'}
+                        className="w-full bg-black border border-zinc-800 sm:border-white/5 rounded-sm min-h-[36px] sm:min-h-[40px] px-2.5 sm:px-3 py-1.5 sm:py-2.5 text-xs sm:text-sm text-zinc-300 focus:outline-none focus:border-gold-pure/45 transition-colors cursor-default max-w-full min-w-0"
+                      />
                     </div>
+
+                    <div className="space-y-0.5 sm:space-y-1">
+                      <label htmlFor="checkout-region" className="text-[9px] sm:text-[10px] text-zinc-400 uppercase tracking-widest font-semibold block mb-0.5 sm:mb-1">
+                        {i18n.language === 'ar' ? 'المنطقة / المحافظة' : 'Region / Province'} <span className="text-gold-pure">*</span>
+                      </label>
+                      <input
+                        id="checkout-region"
+                        type="text"
+                        value={region}
+                        readOnly
+                        required
+                        placeholder={i18n.language === 'ar' ? 'تُحدد تلقائياً من الموقع' : 'Detected automatically from map'}
+                        className="w-full bg-black border border-zinc-800 sm:border-white/5 rounded-sm min-h-[36px] sm:min-h-[40px] px-2.5 sm:px-3 py-1.5 sm:py-2.5 text-xs sm:text-sm text-zinc-300 focus:outline-none focus:border-gold-pure/45 transition-colors cursor-default max-w-full min-w-0"
+                      />
+                    </div>
+                  </div>
+                )}
 
                     {/* 5. Shipping Address */}
                     <div className="space-y-0.5 sm:space-y-1">
@@ -1663,6 +1731,11 @@ export default function Checkout({
                                 <p className="text-[8.5px] text-zinc-500 font-mono">
                                   {activeAddress.eta}
                                 </p>
+                                {deliveryRouteInfo && (
+                                  <p className="text-[8px] text-zinc-600 font-mono mt-0.5">
+                                    {deliveryRouteInfo.distanceKm.toFixed(1)} km • {deliveryRouteInfo.durationMin} min route
+                                  </p>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -1765,6 +1838,11 @@ export default function Checkout({
                               {activeAddress.eta && (
                                 <span className="text-[10px] text-zinc-500 font-mono block">
                                   {activeAddress.eta}
+                                </span>
+                              )}
+                              {deliveryRouteInfo && (
+                                <span className="text-[9px] text-zinc-600 font-mono block">
+                                  {deliveryRouteInfo.distanceKm.toFixed(1)} km • {deliveryRouteInfo.durationMin} min route
                                 </span>
                               )}
                             </div>
@@ -1879,8 +1957,6 @@ export default function Checkout({
                   )}
 
                 </div>
-              </>
-            )}
           </div>
         </div>
 
@@ -2406,20 +2482,25 @@ export default function Checkout({
                 </div>
               )}
 
-              {/* VAT (15%) */}
+              {/* VAT — resolved from the active server tax configuration */}
               <div className="flex justify-between text-zinc-400">
                 <div className="flex items-center gap-1.5">
                   <span>{i18n.language === 'ar' ? 'ضريبة القيمة المضافة' : 'VAT'}</span>
-                  <span className="text-[9px] px-1 py-0.5 rounded-xs bg-white/5 border border-white/10 tabular-nums-fix">15%</span>
+                  {authoritativeTaxRate !== null ? (
+                    <span className="text-[9px] px-1 py-0.5 rounded-xs bg-white/5 border border-white/10 tabular-nums-fix">
+                      {authoritativeTaxRate}%
+                    </span>
+                  ) : null}
                 </div>
-                <span className="font-sans text-zinc-200 tabular-nums-fix">{formatCurrency(vatAmount)} {t('app.sar')}</span>
+                <span className="font-sans text-zinc-200 tabular-nums-fix">
+                  {authoritativeTaxAmount === null ? (i18n.language === 'ar' ? 'يُحسب عند الدفع' : 'Calculated at checkout') : formatCurrency(authoritativeTaxAmount) + ' ' + t('app.sar')}
+                </span>
               </div>
-
               {/* Shipping calculating message */}
               <div className="flex justify-between text-zinc-400">
                 <span>{t('cart.shipping', { defaultValue: 'Shipping' })}</span>
                 <span className="font-sans text-[#D4AF37] font-semibold text-right tabular-nums-fix">
-                  {!city ? (i18n.language === 'ar' ? 'يحتسب عند الدفع' : 'Calculated at checkout') : (shippingFee === 0 ? 'Free' : `${formatCurrency(shippingFee)} ${t('app.sar')}`)}
+                  {shippingFee === null ? (i18n.language === 'ar' ? 'جاري الحساب...' : 'Calculating...') : (shippingFee === 0 ? 'Free' : formatCurrency(shippingFee) + ' ' + t('app.sar'))}
                 </span>
               </div>
 
@@ -2429,7 +2510,9 @@ export default function Checkout({
               {/* Final sum */}
               <div className="flex justify-between text-sm sm:text-base uppercase font-display font-medium text-white tracking-wider">
                 <span>{t('cart.total', { defaultValue: 'Total' })}</span>
-                <span className="text-gold-pure font-sans font-bold text-base sm:text-lg rtl:text-left tabular-nums-fix">{formatCurrency(finalTotal)} {t('app.sar')}</span>
+                <span className="text-gold-pure font-sans font-bold text-base sm:text-lg rtl:text-left tabular-nums-fix">
+                  {finalTotal === null ? (i18n.language === 'ar' ? 'يُحسب عند الدفع' : 'Calculated at checkout') : formatCurrency(finalTotal) + ' ' + t('app.sar')}
+                </span>
               </div>
 
             </div>
@@ -2486,9 +2569,11 @@ export default function Checkout({
               type="submit"
               disabled={isSubmitting || !termsAccepted}
               className={`w-full py-3.5 sm:py-5 font-display font-bold uppercase tracking-widest text-[11px] sm:text-[11.5px] rounded-sm transition-all duration-300 flex items-center justify-center gap-3 min-h-[44px] sm:min-h-[48px] ${
-                !termsAccepted || isSubmitting
-                  ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-white/5 opacity-60'
-                  : 'bg-[#D4AF37] hover:bg-white text-black cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.25)] active:scale-95'
+                isSubmitting
+                  ? 'bg-zinc-800 text-zinc-500 cursor-wait border border-white/5 opacity-70'
+                  : termsAccepted
+                    ? 'bg-[#D4AF37] hover:bg-[#e2bd44] text-black cursor-pointer border border-[#D4AF37] shadow-[0_0_24px_rgba(212,175,55,0.35)] hover:shadow-[0_0_30px_rgba(212,175,55,0.5)] active:scale-[0.99]'
+                    : 'bg-zinc-800/90 text-zinc-500 cursor-not-allowed border border-white/10 opacity-70'
               }`}
             >
               {isSubmitting ? (

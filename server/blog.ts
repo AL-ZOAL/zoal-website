@@ -64,12 +64,18 @@ async function validateAuthorExists(supabase: any, authorId: string): Promise<bo
   return !!data;
 }
 
+// Helper to sanitize search strings for safe PostgREST filter queries
+function sanitizeSearchTerm(term: string): string {
+  if (!term || typeof term !== 'string') return '';
+  return term.replace(/[,().":\\%]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 // --- BLOG POSTS ---
 export async function getBlogPosts(req: Request, res: Response) {
   const supabase = getSupabaseClient();
   if (!supabase) return res.status(500).json({ error: 'Supabase client not initialized.' });
 
-  const { category, tag, search, status, limit = '50', page = '1' } = req.query;
+  const { category, tag, author, search, status, sortBy, limit = '50', page = '1' } = req.query;
 
   // Verify status access
   let targetStatus = 'published';
@@ -95,19 +101,77 @@ export async function getBlogPosts(req: Request, res: Response) {
 
   query = query.eq('status', targetStatus);
 
-  if (category) {
+  if (category && typeof category === 'string') {
     query = query.eq('category_id', category);
   }
 
-  if (search) {
-    query = query.or(`title.ilike.%${search}%,content.ilike.%${search}%`);
+  if (author && typeof author === 'string') {
+    let authorId = author;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(author);
+    if (!isUuid) {
+      const { data: authorRow } = await supabase
+        .from('zoal_blog_authors')
+        .select('id')
+        .or(`name.eq.${author},email.eq.${author}`)
+        .maybeSingle();
+      if (authorRow) {
+        authorId = authorRow.id;
+      }
+    }
+    query = query.eq('author_id', authorId);
+  }
+
+  if (tag && typeof tag === 'string') {
+    let tagId = tag;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tag);
+    if (!isUuid) {
+      const { data: tagRow } = await supabase
+        .from('zoal_blog_tags')
+        .select('id')
+        .or(`slug.eq.${tag},name.eq.${tag}`)
+        .maybeSingle();
+      if (tagRow) {
+        tagId = tagRow.id;
+      }
+    }
+
+    const { data: postTagRows } = await supabase
+      .from('zoal_blog_post_tags')
+      .select('post_id')
+      .eq('tag_id', tagId);
+
+    const matchingPostIds = postTagRows ? postTagRows.map((r: any) => r.post_id) : [];
+    if (matchingPostIds.length === 0) {
+      return res.json({ posts: [], page: parseInt(page as string, 10) || 1, limit: parseInt(limit as string, 10) || 50, total: 0 });
+    }
+    query = query.in('id', matchingPostIds);
+  }
+
+  if (search && typeof search === 'string') {
+    const cleanSearch = sanitizeSearchTerm(search);
+    if (cleanSearch) {
+      query = query.or(`title.ilike.%${cleanSearch}%,title_ar.ilike.%${cleanSearch}%,content.ilike.%${cleanSearch}%,content_ar.ilike.%${cleanSearch}%`);
+    }
+  }
+
+  if (sortBy === 'trending') {
+    query = query
+      .order('view_count', { ascending: false })
+      .order('like_count', { ascending: false })
+      .order('created_at', { ascending: false });
+  } else if (sortBy === 'popular') {
+    query = query.order('view_count', { ascending: false });
+  } else if (sortBy === 'oldest') {
+    query = query.order('created_at', { ascending: true });
+  } else {
+    query = query.order('created_at', { ascending: false });
   }
 
   const lim = parseInt(limit as string, 10) || 50;
   const pge = parseInt(page as string, 10) || 1;
   const offset = (pge - 1) * lim;
 
-  query = query.order('created_at', { ascending: false }).range(offset, offset + lim - 1);
+  query = query.range(offset, offset + lim - 1);
 
   const { data, error, count } = await query;
   if (error) return res.status(500).json({ error: error.message });
@@ -488,6 +552,23 @@ export async function processScheduledBlogPosts() {
 // Scheduler execution is intentionally request-driven.
 // Vercel/serverless instances must not rely on process-level timers for production scheduling.
 // The dedicated /api/blog/cron/process-schedules endpoint is the authoritative trigger.
+
+export async function handleCronProcessSchedules(req: Request, res: Response) {
+  const configuredSecret = process.env.CRON_SECRET;
+  if (!configuredSecret) return res.status(503).json({ error: 'Cron endpoint is not configured.' });
+  const authHeader = req.headers.authorization;
+  const providedSecret = authHeader && authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : (req.headers['x-cron-secret'] as string | undefined);
+  if (!providedSecret || providedSecret !== configuredSecret) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    await processScheduledBlogPosts();
+    return res.json({ success: true, message: 'Scheduled blog posts processing completed.' });
+  } catch (err: any) {
+    console.error('[Blog Scheduler Cron Endpoint] Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error', message: err.message });
+  }
+}
 
 export async function scheduleBlogPost(req: Request, res: Response) {
   const user = (req as any).user;
@@ -1094,13 +1175,15 @@ export async function searchBlog(req: Request, res: Response) {
   const supabase = getSupabaseClient();
   if (!supabase) return res.status(500).json({ error: 'Supabase client not initialized.' });
 
-  if (!q) return res.json([]);
+  if (!q || typeof q !== 'string') return res.json([]);
+  const cleanQ = sanitizeSearchTerm(q);
+  if (!cleanQ) return res.json([]);
 
   const { data, error } = await supabase
     .from('zoal_blog_posts')
     .select('id, title, title_ar, slug, excerpt, excerpt_ar, published_at')
     .eq('status', 'published')
-    .or(`title.ilike.%${q}%,content.ilike.%${q}%`)
+    .or(`title.ilike.%${cleanQ}%,title_ar.ilike.%${cleanQ}%,content.ilike.%${cleanQ}%,content_ar.ilike.%${cleanQ}%`)
     .limit(10);
 
   if (error) return res.status(500).json({ error: error.message });
@@ -1372,12 +1455,19 @@ export async function trackBlogPostView(req: Request, res: Response) {
       return res.status(500).json({ error: 'Database Error', message: 'Failed to record view.' });
     }
 
-    // 4. Increment view_count atomically using postgres rpc
+    // 4. Increment view_count atomically using postgres rpc with resilient update fallback
     const { error: rpcErr } = await supabase.rpc('increment_view_count', { post_id: id });
 
     if (rpcErr) {
-      console.error(`[Blog Views] Critical failure: RPC increment_view_count failed for post ${id}:`, rpcErr);
-      return res.status(500).json({ error: 'Database Error', message: 'Failed to record view.' });
+      console.warn(`[Blog Views] RPC increment_view_count failed for post ${id}, applying direct update fallback:`, rpcErr.message);
+      const { error: updateErr } = await supabase
+        .from('zoal_blog_posts')
+        .update({ view_count: (post.view_count || 0) + 1, updated_at: new Date().toISOString() })
+        .eq('id', id);
+      if (updateErr) {
+        console.error(`[Blog Views] Critical failure: Direct view count update failed for post ${id}:`, updateErr);
+        return res.status(500).json({ error: 'Database Error', message: 'Failed to record view.' });
+      }
     }
 
     return res.json({ success: true, message: 'View tracked successfully.', current_views: (post.view_count || 0) + 1 });
@@ -1385,4 +1475,74 @@ export async function trackBlogPostView(req: Request, res: Response) {
     console.error('[Blog Views] Error tracking view:', err);
     return res.status(500).json({ error: 'Internal Server Error', message: err.message });
   }
+}
+
+function getLikeIdentifier(req: Request, user: any, postId: string): string {
+  if (user?.id) return user.id;
+  const ipAddress = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'unknown-ip').split(',')[0].trim();
+  const userAgent = req.headers['user-agent'] || 'unknown-ua';
+  const crypto = require('crypto') as typeof import('crypto');
+  return crypto.createHash('sha256').update(`zoal-blog-like:${postId}:${ipAddress}:${userAgent}`).digest('hex');
+}
+
+export async function getPostLikeStatus(req: Request, res: Response) {
+  const { id } = req.params;
+  const user = await getOptionalUser(req);
+  const userIdentifier = getLikeIdentifier(req, user, id);
+
+  const supabase = getServiceSupabaseClient() || getSupabaseClient();
+  if (!supabase) return res.status(500).json({ error: 'Supabase client not initialized.' });
+
+  const { data: post, error: postErr } = await supabase
+    .from('zoal_blog_posts')
+    .select('like_count')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (postErr || !post) {
+    return res.status(404).json({ error: 'Post not found' });
+  }
+
+  const { data: likeRecord } = await supabase
+    .from('zoal_blog_likes')
+    .select('status')
+    .eq('post_id', id)
+    .eq('user_identifier', userIdentifier)
+    .maybeSingle();
+
+  const liked = !!likeRecord && likeRecord.status === 'active';
+  res.json({ liked, like_count: post.like_count || 0 });
+}
+
+export async function togglePostLike(req: Request, res: Response) {
+  const { id } = req.params;
+  const user = await getOptionalUser(req);
+  const userIdentifier = getLikeIdentifier(req, user, id);
+
+  const supabase = getServiceSupabaseClient();
+  if (!supabase) return res.status(500).json({ error: 'Server like service is not configured.' });
+
+  const { data: post, error: postErr } = await supabase
+    .from('zoal_blog_posts')
+    .select('id, like_count')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (postErr || !post) return res.status(404).json({ error: 'Post not found' });
+
+  const { data, error } = await supabase.rpc('toggle_blog_like', {
+    p_post_id: id,
+    p_user_identifier: userIdentifier
+  });
+
+  if (error) {
+    console.error(`[Blog Likes] Failed to toggle like for post ${id}:`, error);
+    return res.status(500).json({ error: 'Database Error', message: 'Failed to update like.' });
+  }
+
+  const result = Array.isArray(data) ? data[0] : data;
+  return res.json({
+    liked: result?.liked === true,
+    like_count: Number(result?.like_count ?? post.like_count ?? 0)
+  });
 }

@@ -1573,6 +1573,32 @@ app.post('/api/orders/create', optionalAuthenticate, async (req: any, res: any) 
   let resolvedProvider = 'local';
   let resolvedSmsaAllowed = false;
 
+  // Enforce product-level local-food routing server-side.
+  // Client checkout selection must not be able to turn a local-only item into SMSA/nationwide shipping.
+  const hasLocalOnlyItems = Array.isArray(order.items) && order.items.some((item: any) =>
+    item?.product?.deliveryType === 'LOCAL_ONLY' ||
+    item?.product?.delivery_type === 'LOCAL_ONLY' ||
+    item?.deliveryType === 'LOCAL_ONLY' ||
+    item?.delivery_type === 'LOCAL_ONLY'
+  );
+  const normalizedCity = String(clientCity).trim().toLowerCase();
+  const normalizedDistrict = String(clientDistrict).trim().toLowerCase();
+  const localHaystack = [normalizedCity, normalizedDistrict].join(' ');
+  const isHofufLocalArea =
+    localHaystack.includes('hofuf') ||
+    localHaystack.includes('al-hofuf') ||
+    localHaystack.includes('هفوف') ||
+    localHaystack.includes('المبرز') ||
+    localHaystack.includes('nearby al hofuf') ||
+    localHaystack.includes('hofuf nearby');
+
+  if (hasLocalOnlyItems && selectedMethod !== 'local_delivery') {
+    return res.status(400).json({ error: 'Local-only products must use local delivery.' });
+  }
+  if (hasLocalOnlyItems && !isHofufLocalArea) {
+    return res.status(400).json({ error: 'Local-only products are currently available only in Al Hofuf and nearby Al Hofuf areas.' });
+  }
+
   try {
     const resFee = await calculateAuthoritativeShippingFee({
       city: clientCity,
@@ -1605,6 +1631,33 @@ app.post('/api/orders/create', optionalAuthenticate, async (req: any, res: any) 
   }
 
   try {
+    // Idempotency guard: this endpoint can be called again after payment
+    // finalization. Never create a second order for the same order ID.
+    const { data: existingOrder, error: existingOrderError } = await supabase
+      .from('zoal_orders')
+      .select('id, customer_id, status, payment_status')
+      .eq('id', order.id)
+      .maybeSingle();
+
+    if (existingOrderError) throw existingOrderError;
+
+    if (existingOrder) {
+      if (existingOrder.customer_id && existingOrder.customer_id !== resolvedCustomerId) {
+        return res.status(403).json({ error: 'You do not have permission to finalize this order.' });
+      }
+
+      if (['cancelled', 'failed'].includes(String(existingOrder.status).toLowerCase())) {
+        return res.status(409).json({ error: 'This order is no longer available for finalization.' });
+      }
+
+      return res.json({
+        success: true,
+        persisted: true,
+        idempotent: true,
+        orderId: existingOrder.id
+      });
+    }
+
     // Query active published terms version ID for legal consent capture
     let termsAcceptedVersionId: string | null = null;
     try {
@@ -2953,10 +3006,11 @@ app.post('/api/contact', validateContactSecurity, async (req, res) => {
     }
 
     // 4. Return response
-    return res.status(200).json({
-      success: true,
+    return res.status(supabaseSaved ? 200 : 503).json({
+      success: supabaseSaved,
+      id: inquiryId,
       inquiryId,
-      message: 'Your inquiry has been processed successfully.',
+      message: supabaseSaved ? 'Your inquiry has been processed successfully.' : 'We could not securely store your inquiry. Please try again.',
       supabaseSaved,
       emailSent,
       warning: emailWarning || undefined
@@ -2986,7 +3040,7 @@ app.post('/api/blog/tags', authenticateRequest, requireRole(['staff', 'editor', 
 app.delete('/api/blog/tags/:id', authenticateRequest, requireRole(['staff', 'editor', 'manager', 'admin', 'owner']), blogModule.deleteTag);
 
 app.get('/api/blog/comments', blogModule.getComments);
-app.post('/api/blog/comments', authenticateRequest, requireRole(['staff', 'editor', 'manager', 'admin', 'owner']), blogModule.createComment);
+app.post('/api/blog/comments', authenticateRequest, blogModule.createComment);
 app.put('/api/blog/comments/:id', authenticateRequest, requireRole(['staff', 'editor', 'manager', 'admin', 'owner']), blogModule.updateCommentStatus);
 app.delete('/api/blog/comments/:id', authenticateRequest, requireRole(['staff', 'editor', 'manager', 'admin', 'owner']), blogModule.deleteComment);
 
@@ -3011,8 +3065,12 @@ app.post('/api/blog/revisions', authenticateRequest, requireRole(['staff', 'edit
 app.get('/api/blog/schedule', authenticateRequest, requireRole(['staff', 'editor', 'manager', 'admin', 'owner']), blogModule.getSchedules);
 app.post('/api/blog/schedule', authenticateRequest, requireRole(['staff', 'editor', 'manager', 'admin', 'owner']), blogModule.scheduleBlogPost);
 app.post('/api/blog/schedule/cancel', authenticateRequest, requireRole(['staff', 'editor', 'manager', 'admin', 'owner']), blogModule.cancelPostSchedule);
+app.post('/api/blog/cron/process-schedules', blogModule.handleCronProcessSchedules);
+app.get('/api/blog/cron/process-schedules', blogModule.handleCronProcessSchedules);
 app.post('/api/blog/posts/:id/view', blogModule.trackBlogPostView);
 app.post('/api/blog/:id/view', blogModule.trackBlogPostView);
+app.get('/api/blog/posts/:id/like', blogModule.getPostLikeStatus);
+app.post('/api/blog/posts/:id/like', blogModule.togglePostLike);
 
 // -------------------------------------------------------------
 // ENTERPRISE PRODUCTION PRODUCT IMPORT ENGINE API ROUTES

@@ -6,7 +6,7 @@ import { Product, BusinessCategory } from '../types';
 import ScrollZoomImage from './ScrollZoomImage';
 import { motion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
-import { SafeImage, useGlobalProducts, useGlobalImages, resolveProductImage, normalizeCategory } from '../imageRegistry';
+import { SafeImage, useGlobalProductsWithStatus, useGlobalImages, resolveProductImage, normalizeCategory } from '../imageRegistry';
 import { formatCurrency } from '../utils';
 import { categoryApi } from '../lib/categoryApi';
 
@@ -33,14 +33,11 @@ export default React.memo(function Store({
   wishlist,
   initialCategoryFilter = 'all'
 }: StoreProps) {
-  const renderTime = performance.now();
-  console.count("[Audit] Store render");
-  console.log(`[Audit] Store rendering. time: ${renderTime.toFixed(2)}ms`);
-
   const { t, i18n } = useTranslation();
   const isAr = i18n.language === 'ar';
   const [searchTerm, setSearchTerm] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>(initialCategoryFilter);
+  const [activeBrand, setActiveBrand] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'featured' | 'newest' | 'best_sellers' | 'rating' | 'price-low' | 'price-high'>('featured');
   const [quickViewProduct, setQuickViewProduct] = useState<Product | null>(null);
   const [selectedOption, setSelectedOption] = useState<string>('');
@@ -50,10 +47,8 @@ export default React.memo(function Store({
   const [successId, setSuccessId] = useState<string | null>(null);
 
   // Hook subscriptions
-  const allProducts = useGlobalProducts();
+  const { products: allProducts, isLoading: productsLoading } = useGlobalProductsWithStatus();
   const globalImages = useGlobalImages();
-
-  console.log(`[Audit] Store hook products: ${allProducts.length}, time: ${performance.now().toFixed(2)}ms`);
 
   // Authoritative CMS lists. null means the request has not completed or failed; an empty array is valid server state.
   const [serverCategories, setServerCategories] = useState<any[] | null>(null);
@@ -162,16 +157,32 @@ export default React.memo(function Store({
 
   // Compute filtered & sorted product list with strict validation of elements
   const filteredProducts = useMemo(() => {
+    const term = searchTerm.toLowerCase().trim();
     const rawFiltered = allProducts.filter((product) => {
       const matchSearch =
-        (product.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (product.description || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (product.story || '').toLowerCase().includes(searchTerm.toLowerCase());
+        !term ||
+        (product.name || '').toLowerCase().includes(term) ||
+        (product.nameEn || '').toLowerCase().includes(term) ||
+        (product.nameAr || '').toLowerCase().includes(term) ||
+        (product.title_ar || '').toLowerCase().includes(term) ||
+        (product.description || '').toLowerCase().includes(term) ||
+        (product.description_ar || '').toLowerCase().includes(term) ||
+        (product.shortDescription || '').toLowerCase().includes(term) ||
+        (product.short_description_ar || '').toLowerCase().includes(term) ||
+        (product.story || '').toLowerCase().includes(term);
       
       const matchCategory = activeCategory === 'all' || normalizeCategory(product.category) === normalizeCategory(activeCategory);
+      const productBrandId = String(
+        (product as any).brand_id ??
+        (product as any).brandId ??
+        ((product as any).brand && typeof (product as any).brand === 'object' ? ((product as any).brand.id ?? (product as any).brand.name) : (product as any).brand) ??
+        ''
+      );
+      const matchBrand = activeBrand === 'all' || productBrandId === activeBrand;
+      const isProductInStock = product.inventory === undefined || product.inventory > 0;
       const matchFilter = 
         activeFilter === 'all' ||
-        (activeFilter === 'in_stock' && product.inventory > 0) ||
+        (activeFilter === 'in_stock' && isProductInStock) ||
         (activeFilter === 'featured' && (product.isFeatured || product.is_featured || product.featured)) ||
         (activeFilter === 'popular' && (product.isPopular || product.is_popular || product.popular)) ||
         (activeFilter === 'new_arrivals' && (product.isNewArrival || product.is_new_arrival)) ||
@@ -183,21 +194,30 @@ export default React.memo(function Store({
         (activeFilter === 'staff_pick' && (product.isStaffPick || product.is_staff_pick)) ||
         (activeFilter === 'luxury_choice' && (product.isLuxuryChoice || product.is_luxury_choice));
 
-      return matchSearch && matchCategory && matchFilter;
+      return matchSearch && matchCategory && matchBrand && matchFilter;
     });
 
     return rawFiltered.sort((a, b) => {
       if (sortBy === 'price-low') return a.price - b.price;
       if (sortBy === 'price-high') return b.price - a.price;
-      if (sortBy === 'rating') return b.rating - a.rating;
-      if (sortBy === 'featured') return (b.isFeatured ? 1 : 0) - (a.isFeatured ? 1 : 0);
+      if (sortBy === 'rating') return (b.rating || 0) - (a.rating || 0);
+      if (sortBy === 'featured') return (Boolean((b as any).isFeatured ?? (b as any).is_featured ?? (b as any).featured) ? 1 : 0) - (Boolean((a as any).isFeatured ?? (a as any).is_featured ?? (a as any).featured) ? 1 : 0);
       if (sortBy === 'newest') return new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime();
-      if (sortBy === 'best_sellers') return (b.isBestSeller ? 1 : 0) - (a.isBestSeller ? 1 : 0);
+      if (sortBy === 'best_sellers') return (Boolean((b as any).isBestSeller ?? (b as any).is_best_seller) ? 1 : 0) - (Boolean((a as any).isBestSeller ?? (a as any).is_best_seller) ? 1 : 0);
       return 0; // Default sorting
     });
-  }, [allProducts, searchTerm, activeCategory, activeFilter, sortBy]);
+  }, [allProducts, searchTerm, activeCategory, activeBrand, activeFilter, sortBy]);
 
-  // Determine standard configuration options per category
+  // Keyboard Escape dismissal for quick view modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && quickViewProduct) {
+        setQuickViewProduct(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [quickViewProduct]);
   const getProductOptions = (category: BusinessCategory) => {
     switch (category) {
       case 'coffee': return ['Whole Beans', 'Infused Ground', 'Fine Roasted Espresso'];
@@ -340,6 +360,18 @@ export default React.memo(function Store({
 
             {/* Filters & Sorting Controls */}
             <div className="w-[30%] md:w-auto flex items-center space-x-1.5 md:space-x-3 rtl:space-x-reverse justify-end shrink-0">
+              {brandsList.length > 1 && (
+                <select
+                  value={activeBrand}
+                  onChange={(e) => setActiveBrand(e.target.value)}
+                  aria-label={t('store.brand_filter', { defaultValue: 'Filter by brand' })}
+                  className="hidden md:block bg-black border border-white/5 rounded-sm text-[10px] md:text-[11px] text-zinc-400 py-2 px-2.5 focus:outline-none focus:border-gold-pure/40 md:min-w-[150px]"
+                >
+                  {brandsList.map((brand) => (
+                    <option key={brand.id} value={brand.id}>{brand.name}</option>
+                  ))}
+                </select>
+              )}
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as any)}
@@ -529,7 +561,19 @@ export default React.memo(function Store({
         )}
 
         {/* Dynamic products list grid */}
-        {filteredProducts.length === 0 ? (
+        {productsLoading ? (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1 sm:gap-4 mt-2">
+            {Array.from({ length: 8 }).map((_, index) => (
+              <div key={index} className="border border-white/5 bg-zinc-950/40 rounded-sm overflow-hidden animate-pulse">
+                <div className="aspect-[4/5] bg-zinc-900/80" />
+                <div className="p-3 space-y-2">
+                  <div className="h-2.5 w-3/4 bg-zinc-900 rounded" />
+                  <div className="h-2 w-1/2 bg-zinc-900 rounded" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : filteredProducts.length === 0 ? (
           <div className="text-center py-24 border border-dashed border-white/5 rounded-sm p-8 bg-zinc-950/20">
             <SearchX className="w-10 h-10 text-gold-pure/40 mx-auto mb-4 animate-pulse" />
             <span className="font-display text-sm tracking-widest uppercase text-white block mb-2">
@@ -566,12 +610,16 @@ export default React.memo(function Store({
                     product.category === 'market' ? 'aspect-[16/9]' : 'aspect-square'
                   }`}>
                     
-                    {/* Floating popular badge */}
-                    {product.popular && (
+                    {/* Floating popular or out of stock badge */}
+                    {product.inventory !== undefined && product.inventory <= 0 ? (
+                      <span className="absolute top-1.5 left-1.5 sm:top-3 sm:left-3 z-10 text-[6.5px] sm:text-[9px] uppercase font-display tracking-widest text-white bg-zinc-800/90 font-medium px-1.5 py-0.5 sm:px-2.5 sm:py-1 border border-white/10 select-none">
+                        {isAr ? 'نفد المخزون' : 'Out of Stock'}
+                      </span>
+                    ) : product.popular ? (
                       <span className="absolute top-1.5 left-1.5 sm:top-3 sm:left-3 z-10 text-[6.5px] sm:text-[9px] uppercase font-display tracking-widest text-black bg-gold-pure font-bold px-1.5 py-0.5 sm:px-3 sm:py-1 bg-gradient-to-r from-gold-dark to-gold-pure select-none">
                         {t('store.popular_choice')}
                       </span>
-                    )}
+                    ) : null}
 
                     <div className={`w-full h-full transition-transform duration-700 ease-out ${
                       product.category === 'market' ? '' : 'group-hover:scale-105'
