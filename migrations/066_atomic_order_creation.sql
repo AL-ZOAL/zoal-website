@@ -409,7 +409,7 @@ BEGIN
     RAISE EXCEPTION 'ORDER_NOT_FOUND';
   END IF;
 
-  IF v_payment_status NOT IN ('paid', 'refunded', 'partially_refunded') THEN
+  IF v_payment_status IS NULL OR v_payment_status NOT IN ('paid', 'refunded', 'partially_refunded') THEN
     RAISE EXCEPTION 'ORDER_NOT_PAID_OR_REFUNDED';
   END IF;
 
@@ -520,6 +520,7 @@ DECLARE
   v_inventory RECORD;
   v_ledger_count integer;
   v_active_reserved integer;
+  v_consumed_count integer;
   v_remaining integer;
   v_take integer;
 BEGIN
@@ -744,6 +745,16 @@ BEGIN
 
     IF v_ledger_count > 0 THEN
       IF v_active_reserved = 0 THEN
+        SELECT count(*)
+          INTO v_consumed_count
+          FROM public.zoal_order_inventory_reservations
+         WHERE order_id = p_order_id
+           AND product_id = v_item.product_id
+           AND released_at IS NULL
+           AND consumed_at IS NOT NULL;
+        IF v_consumed_count > 0 THEN
+          RAISE EXCEPTION 'RESERVATION_ALREADY_CONSUMED_FOR_UNPAID_ORDER:%', v_item.product_id;
+        END IF;
         CONTINUE;
       END IF;
       IF v_active_reserved <> v_item.quantity THEN
