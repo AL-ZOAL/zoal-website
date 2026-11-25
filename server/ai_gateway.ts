@@ -26,7 +26,11 @@ const AI_RATE_LIMIT_WINDOW_SECONDS = Number(process.env.AI_RATE_LIMIT_WINDOW_SEC
 function getPgClient() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is not configured');
-  return new Client({ connectionString, ssl: { rejectUnauthorized: false } });
+  // Certificate verification is enabled by default. Only set
+  // AI_DATABASE_SSL_REJECT_UNAUTHORIZED=false for a documented legacy DB
+  // endpoint with a private/self-signed CA; this disables peer verification.
+  const rejectUnauthorized = process.env.AI_DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false';
+  return new Client({ connectionString, ssl: { rejectUnauthorized } });
 }
 
 function getUserId(req: Request): string {
