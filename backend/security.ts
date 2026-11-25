@@ -43,6 +43,8 @@ export function rateLimiterMiddleware(maxRequests: number = 100, windowMs: numbe
 }
 export function userRateLimiterMiddleware(maxRequests: number = 100, windowMs: number = 15 * 60 * 1000) { return rateLimiterMiddleware(maxRequests, windowMs); }
 export function csrfProtectionMiddleware(req: Request, res: Response, next: NextFunction) {
+ // Meta webhook POSTs are authenticated with their raw-body HMAC signature in app.ts.
+ if (req.path === '/api/webhooks/whatsapp') return next();
  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
  const authHeader = req.headers.authorization;
  const headerValue = Array.isArray(authHeader) ? authHeader[0] : authHeader;
