@@ -143,7 +143,14 @@ function getAiClient(): GoogleGenAI {
 app.use(compression());
 
 // Parse json payloads
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({
+  limit: '50mb',
+  verify: (req: any, _res, buf) => {
+    if (req.originalUrl?.split('?')[0] === '/api/webhooks/whatsapp') {
+      req.rawBody = Buffer.from(buf);
+    }
+  }
+}));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Apply dynamic sovereign security headers (CSP, HSTS, Clickjacking, MIME checks, Permissions, Referrer)
@@ -155,31 +162,51 @@ app.use(xssSanitizerMiddleware);
 // Validate requests to prevent Cross-Site Request Forgery (CSRF)
 app.use(csrfProtectionMiddleware);
 
+// Apply the existing compatible IP rate limiter specifically to public Meta webhook traffic.
+app.use('/api/webhooks/whatsapp', rateLimiterMiddleware(60, 15 * 60 * 1000));
+
 // WhatsApp Cloud API webhook verification/receiver.
-// Kept before the global /api rate limiter so Meta webhook delivery is not
-// throttled by application-user rate limiting.
 app.get('/api/webhooks/whatsapp', (req, res) => {
-  const mode = String(req.query['hub.mode'] || '');
-  const token = String(req.query['hub.verify_token'] || '');
-  const challenge = String(req.query['hub.challenge'] || '');
-  const expectedToken = String(process.env.WHATSAPP_VERIFY_TOKEN || '');
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || '';
 
   if (!expectedToken) {
     return res.status(503).json({ error: 'WhatsApp webhook verification is not configured.' });
   }
-
-  const tokenMatches = Buffer.byteLength(token) === Buffer.byteLength(expectedToken)
-    && timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken));
-
-  if (mode !== 'subscribe' || !challenge || !tokenMatches) {
-    return res.status(403).json({ error: 'WhatsApp webhook verification failed.' });
+  if (typeof mode !== 'string' || typeof token !== 'string' || typeof challenge !== 'string'
+      || token.length > 1024 || challenge.length === 0 || challenge.length > 2048) {
+    return res.status(400).json({ error: 'Invalid WhatsApp verification parameters.' });
   }
 
-  return res.status(200).send(challenge);
+  const supplied = Buffer.from(token, 'utf8');
+  const expected = Buffer.from(expectedToken, 'utf8');
+  const tokenMatches = supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  if (mode !== 'subscribe' || !tokenMatches) {
+    return res.status(403).json({ error: 'WhatsApp webhook verification failed.' });
+  }
+  return res.status(200).type('text/plain').send(challenge);
 });
 
 app.post('/api/webhooks/whatsapp', (req, res) => {
-  if (!req.body || typeof req.body !== 'object') {
+  const appSecret = process.env.WHATSAPP_APP_SECRET || '';
+  const signature = req.get('x-hub-signature-256') || '';
+  const rawBody = (req as any).rawBody as Buffer | undefined;
+
+  if (!appSecret) {
+    return res.status(503).json({ error: 'WhatsApp webhook signature validation is not configured.' });
+  }
+  if (!Buffer.isBuffer(rawBody) || !signature.startsWith('sha256=')) {
+    return res.status(401).json({ error: 'Invalid WhatsApp webhook signature.' });
+  }
+
+  const supplied = Buffer.from(signature.slice(7), 'hex');
+  const expected = createHmac('sha256', appSecret).update(rawBody).digest();
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    return res.status(401).json({ error: 'Invalid WhatsApp webhook signature.' });
+  }
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
     return res.status(400).json({ error: 'Invalid WhatsApp webhook payload.' });
   }
   return res.status(200).json({ received: true });
@@ -894,7 +921,7 @@ async function sendEmailWithRetry(
 
 // ENDPOINTS
 
-import crypto, { randomBytes, createHash, timingSafeEqual } from 'crypto';
+import crypto, { createHmac, randomBytes, createHash, timingSafeEqual } from 'crypto';
 
 // ==========================================
 // AL ZOAL SOVEREIGN AUTHENTICATION SYSTEM API
