@@ -26,7 +26,8 @@ const AI_RATE_LIMIT_WINDOW_SECONDS = Number(process.env.AI_RATE_LIMIT_WINDOW_SEC
 function getPgClient() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is not configured');
-  return new Client({ connectionString, ssl: { rejectUnauthorized: false } });
+  // Always verify the database TLS certificate; do not expose a runtime opt-out.
+  return new Client({ connectionString, ssl: { rejectUnauthorized: true } });
 }
 
 function getUserId(req: Request): string {
