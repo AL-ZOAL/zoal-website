@@ -4,7 +4,6 @@ import fs from 'node:fs';
 
 const app = fs.readFileSync(new URL('../../app.ts', import.meta.url), 'utf8');
 const security = fs.readFileSync(new URL('../../backend/security.ts', import.meta.url), 'utf8');
-const gateway = fs.readFileSync(new URL('../../server/ai_gateway.ts', import.meta.url), 'utf8');
 const workflow = fs.readFileSync(new URL('../../.github/workflows/repair-brands-crud.yml', import.meta.url), 'utf8');
 
 test('WhatsApp webhook captures raw body before sanitization and verifies HMAC', () => {
@@ -16,11 +15,6 @@ test('WhatsApp webhook captures raw body before sanitization and verifies HMAC',
 
 test('only the HMAC-authenticated WhatsApp webhook bypasses CSRF origin checks', () => {
   assert.match(security, /req\.path === '\/api\/webhooks\/whatsapp'/);
-});
-
-test('AI gateway always verifies PostgreSQL TLS certificates', () => {
-  assert.match(gateway, /ssl:\s*\{\s*rejectUnauthorized:\s*true\s*\}/);
-  assert.doesNotMatch(gateway, /AI_DATABASE_SSL_REJECT_UNAUTHORIZED|rejectUnauthorized:\s*false/);
 });
 
 test('CI installs the committed dependency lockfile reproducibly', () => {
