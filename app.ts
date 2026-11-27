@@ -3905,7 +3905,7 @@ app.put('/api/taxes/rates/:id', authenticateRequest, requireRole(['admin', 'mana
 // AI Provider Gateway Routes
 app.post('/api/ai/gateway/generate', authenticateRequest, aiGatewayGenerate);
 app.post('/api/ai/gateway/batch', authenticateRequest, aiGatewayBatch);
-app.get('/api/ai/gateway/status', authenticateRequest, getAIProviderStatus);
+app.get('/api/ai/gateway/status', authenticateRequest, requireRole(['owner', 'admin']), getAIProviderStatus);
 app.post(
   '/api/ai/gateway/rotate',
   authenticateRequest,
